@@ -1,309 +1,367 @@
 from __future__ import annotations
 
-import argparse
-import json
 import re
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# =========================
-# Embedded data (keywords/templates)
-# =========================
-
-SCAM_KEYWORDS: Dict[str, List[str]] = {
-    "urgency_threat": [
-        "立即", "馬上", "立刻", "現在就", "最後通知", "限時", "逾期", "超時",
-        "不配合", "不處理", "將", "會", "凍結", "停用", "封鎖", "提告", "告發",
-        "刑責", "移送", "法院", "偵辦", "拘提", "扣押", "罰款"
-    ],
-    "transfer_payment": [
-        "匯款", "轉帳", "匯入", "匯到", "匯至", "匯給", "刷流水",
-        "點數", "遊戲點數", "購買點數", "儲值", "代充", "禮物卡", "序號",
-        "ATM", "無卡", "超商繳費", "超商代碼", "繳費代碼",
-        "掃碼", "QR", "收款碼", "轉錢", "打錢", "匯錢",
-        "保證金", "解凍金", "手續費", "驗證金", "押金", "保證費"
-    ],
-    "otp_personal_info": [
-        "驗證碼", "簡訊驗證碼", "OTP", "動態碼", "一次性密碼",
-        "身分證", "身分證字號", "帳號", "密碼", "銀行帳號", "卡號", "信用卡",
-        "CVV", "背面三碼", "有效期限", "戶頭", "存摺", "金融卡",
-        "姓名", "生日", "住址", "地址", "電話", "手機號碼",
-        "遠端", "遠端協助", "TeamViewer", "AnyDesk"
-    ],
-    "impersonation_authority": [
-        "警察", "檢察官", "法院", "刑警", "調查局", "地檢署", "派出所",
-        "銀行", "金管會", "客服", "官方客服", "系統通知", "資安", "風控",
-        "蝦皮客服", "momo客服", "PChome客服", "LINE客服"
-    ],
-    "suspicious_link_download": [
-        "點此", "連結", "網址", "下載", "安裝", "APP", "應用程式", "apk",
-        "更新", "升級", "安全性更新", "驗證連結", "登入連結",
-        "加入群", "投資群", "私訊我", "加LINE", "加賴", "加Telegram", "TG"
-    ],
-    "investment_scam": [
-        "投資", "帶單", "老師", "助理", "內幕", "明牌", "保證獲利", "穩賺不賠",
-        "高報酬", "高收益", "飆股", "配息", "套利", "群組", "跟單",
-        "平台", "入金", "出金", "加碼", "補倉", "爆倉", "槓桿", "期貨", "外匯",
-        "虛擬貨幣", "USDT", "比特幣", "BTC", "ETH"
-    ],
-    "romance_money": [
-        "我愛你", "想你", "寶貝", "老公", "老婆", "靈魂伴侶",
-        "遇到困難", "急用錢", "借我", "借錢", "周轉", "醫藥費", "住院", "手術費",
-        "機票", "海關", "保釋", "保證金", "卡住", "帳戶被凍結", "先幫我", "我會還"
-    ],
-}
-
-ACTIONS_BY_LEVEL: Dict[str, List[str]] = {
-    "low": [
-        "先別急著回覆，確認對方身份與來意。",
-        "不要點擊不明連結或下載不明 App。",
-        "涉及帳務改用官網/官方客服自行查詢（不要用對方給的電話或連結）。",
-    ],
-    "medium": [
-        "停止提供任何個資、帳號、驗證碼、卡號等資訊。",
-        "改用『你自己找得到的官方管道』回撥確認（例如銀行官網客服）。",
-        "把對話截圖保存，必要時找可信任的人一起判斷。",
-    ],
-    "high": [
-        "立刻停止匯款/購買點數/任何付款動作。",
-        "若已提供驗證碼或密碼，立即改密碼並聯繫銀行/平台客服凍結風險操作。",
-        "保存證據（對話、帳號、連結、匯款資訊），考慮報警或打 165 查證。",
-    ],
-    "critical": [
-        "立即停止所有交易，並立刻聯繫銀行做止付/凍結/爭議處理。",
-        "若已轉帳或買點數，立刻保留憑證、截圖，打 165 並就近報案。",
-        "不要再與對方糾纏，所有聯絡改由官方/警方處理。",
-    ],
-}
-
-REPLY_TEMPLATES: Dict[str, List[str]] = {
-    "customer_service": [
-        "我會透過官方網站/APP 的客服管道自行查詢，請勿再要求我提供驗證碼或遠端操作。",
-        "若真有異常，請提供案件編號與可供我『自行查證』的官方資訊。",
-        "我不會點擊任何連結或下載任何 App，請用正式公告或官方客服說明。",
-        "我會保留對話紀錄並向 165 查證，謝謝。",
-        "請勿再以『立刻處理/否則凍結』施壓，我只接受官方流程。",
-    ],
-    "transfer": [
-        "我不會轉帳、買點數或提供任何付款資訊；若有需要請走正式平台流程。",
-        "請提供正式帳單/合約與官方聯絡方式，我會自行向官方確認。",
-        "任何要求我『立刻匯款』的訊息我都會先當成高風險處理。",
-        "我會保留對話與收款資訊，必要時提供給 165/警方。",
-        "請停止要求我付款或提供驗證碼。",
-    ],
-    "investment": [
-        "我不接受保證獲利或帶單投資，請勿再邀我入群或提供平台連結。",
-        "我會自行評估並透過合法券商/交易所操作，不會私下入金或提供個資。",
-        "請不要再推『內幕/明牌/限時機會』，我不會跟單。",
-        "任何要求轉帳到私人帳戶的投資邀約我都會直接拒絕。",
-        "我會向 165 查證該平台/群組資訊。",
-    ],
-    "romance": [
-        "我理解你的狀況，但我不會以轉帳/買點數方式協助金錢需求。",
-        "如果真的需要幫忙，請你找身邊家人朋友或正式機構處理。",
-        "任何『急用錢、保證金、解凍金』我都不會支付，請理解。",
-        "我們可以聊，但金錢往來我一律拒絕。",
-        "我會保留對話紀錄，避免誤會與風險。",
-    ],
-    "generic": [
-        "我不會提供驗證碼、帳號密碼或任何個資，也不會點擊不明連結。",
-        "請提供可供我自行查證的官方資訊，否則我會停止對話。",
-        "我會保留對話紀錄並向 165 查證，謝謝。",
-        "請勿催促我做任何付款或驗證動作。",
-        "之後我只透過官方管道處理。",
-    ],
-}
+# -----------------------------
+# Utils
+# -----------------------------
+def _split_sentences(text: str) -> List[str]:
+    t = (text or "").strip()
+    if not t:
+        return []
+    # 先保留原文，但用常見標點切句
+    parts = re.split(r"[。！？!\?\n\r]+", t)
+    return [p.strip() for p in parts if p.strip()]
 
 
-# =========================
-# Core: patterns / rules
-# =========================
-
-def sentence_split(text: str) -> List[str]:
-    text = (text or "").replace("\r\n", "\n")
-    parts = re.split(r"(?<=[。！？!?])\s+|\n+", text)
-    sents = [p.strip() for p in parts if p and p.strip()]
-    return sents or ([text.strip()] if text.strip() else [])
-
-
-def compile_any(keywords: List[str]) -> re.Pattern:
-    kws = [re.escape(k) for k in keywords if k]
-    if not kws:
-        return re.compile(r"(?!x)x")
-    return re.compile("(" + "|".join(kws) + ")", re.IGNORECASE)
-
-
-@dataclass(frozen=True)
-class CompiledPatterns:
-    urgency: re.Pattern
-    transfer: re.Pattern
-    otp: re.Pattern
-    impersonation: re.Pattern
-    suspicious: re.Pattern
-    investment: re.Pattern
-    romance: re.Pattern
-    url: re.Pattern
-    apk: re.Pattern
+def _find_evidence_sentences(text: str, patterns: List[re.Pattern]) -> List[str]:
+    sents = _split_sentences(text)
+    hits: List[str] = []
+    for s in sents:
+        for p in patterns:
+            if p.search(s):
+                hits.append(s)
+                break
+    # 去重但保序
+    seen = set()
+    out = []
+    for h in hits:
+        if h not in seen:
+            seen.add(h)
+            out.append(h)
+    return out[:6]  # 最多給 6 句證據就好，太多很吵
 
 
-def build_patterns() -> CompiledPatterns:
-    return CompiledPatterns(
-        urgency=compile_any(SCAM_KEYWORDS["urgency_threat"]),
-        transfer=compile_any(SCAM_KEYWORDS["transfer_payment"]),
-        otp=compile_any(SCAM_KEYWORDS["otp_personal_info"]),
-        impersonation=compile_any(SCAM_KEYWORDS["impersonation_authority"]),
-        suspicious=compile_any(SCAM_KEYWORDS["suspicious_link_download"]),
-        investment=compile_any(SCAM_KEYWORDS["investment_scam"]),
-        romance=compile_any(SCAM_KEYWORDS["romance_money"]),
-        url=re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE),
-        apk=re.compile(r"\.apk\b|安裝.*app|下載.*app|側載|未知來源", re.IGNORECASE),
-    )
+def _cap(n: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, n))
 
 
+# -----------------------------
+# Rules
+# -----------------------------
 @dataclass
-class RuleHit:
+class Rule:
     name: str
     score: int
-    evidence_sentences: List[str]
+    patterns: List[re.Pattern]
+    types: List[str]  # 命中後加到 scam_types
+    description: str
 
 
-def default_rules() -> List[Tuple[str, int, Any]]:
-    # (name, weight, matcher(sentence, patterns)->bool)
-    return [
-        ("急迫恐嚇", 22, lambda s, p: bool(p.urgency.search(s))),
-        ("要求匯款/點數", 28, lambda s, p: bool(p.transfer.search(s))),
-        ("索取個資/驗證碼", 30, lambda s, p: bool(p.otp.search(s))),
-        ("假冒權威/客服", 24, lambda s, p: bool(p.impersonation.search(s))),
-        ("可疑連結/下載App", 24, lambda s, p: bool(p.suspicious.search(s) or p.url.search(s) or p.apk.search(s))),
-        ("投資詐騙", 26, lambda s, p: bool(p.investment.search(s))),
-        ("感情借錢", 26, lambda s, p: bool(p.romance.search(s))),
-    ]
+def _p(*keywords: str) -> List[re.Pattern]:
+    # 把 keyword 變成 regex pattern（含一些空白容忍）
+    ps: List[re.Pattern] = []
+    for k in keywords:
+        k = re.escape(k)
+        ps.append(re.compile(k, re.IGNORECASE))
+    return ps
 
 
-def score_to_level(score: int) -> str:
+# 常見詐騙特徵 pattern（簡化但實用）
+RULES: List[Rule] = [
+    Rule(
+        name="急迫/恐嚇",
+        score=18,
+        patterns=[
+            re.compile(r"立即|馬上|現在就|限時|最後通牒|倒數", re.IGNORECASE),
+            re.compile(r"否則|不然|將.*(凍結|停用|提告|通緝|起訴)|法律責任", re.IGNORECASE),
+            re.compile(r"(凍結|停用|封鎖).*(帳戶|帳號)|帳戶.*異常", re.IGNORECASE),
+        ],
+        types=["急迫恐嚇"],
+        description="用恐嚇、凍結、起訴等字眼逼你立刻照做。",
+    ),
+    Rule(
+        name="要求匯款/轉帳/點數",
+        score=28,
+        patterns=[
+            re.compile(r"匯款|轉帳|匯入|入金|匯到|轉入", re.IGNORECASE),
+            re.compile(r"點數|遊戲點數|序號|儲值|gift\s*card|禮物卡", re.IGNORECASE),
+            re.compile(r"ATM|提款機|網銀|網路銀行", re.IGNORECASE),
+        ],
+        types=["匯款/點數"],
+        description="要你用轉帳、點數、禮物卡等方式付款，風險超高。",
+    ),
+    Rule(
+        name="索取驗證碼/個資",
+        score=30,
+        patterns=[
+            re.compile(r"驗證碼|OTP|一次性密碼|簡訊碼", re.IGNORECASE),
+            re.compile(r"身分證|證件|銀行卡|卡號|CVV|安全碼", re.IGNORECASE),
+            re.compile(r"密碼|登入資料|帳號密碼", re.IGNORECASE),
+        ],
+        types=["索取個資/驗證碼"],
+        description="要驗證碼、密碼、卡號這種，一律先當詐騙。",
+    ),
+    Rule(
+        name="假冒權威（警/檢/銀行/客服）",
+        score=22,
+        patterns=[
+            re.compile(r"警察|派出所|刑事局|檢察官|地檢署|法院", re.IGNORECASE),
+            re.compile(r"銀行|金管會|客服|官方客服|專員|風控", re.IGNORECASE),
+            re.compile(r"公務機關|政府|戶政|健保", re.IGNORECASE),
+        ],
+        types=["假冒權威"],
+        description="假裝警察檢察官或銀行客服，製造權威感。",
+    ),
+    Rule(
+        name="可疑連結/下載 App/遠端控制",
+        score=20,
+        patterns=[
+            re.compile(r"http[s]?://|www\.", re.IGNORECASE),
+            re.compile(r"下載|安裝|APP|應用程式|APK", re.IGNORECASE),
+            re.compile(r"AnyDesk|TeamViewer|遠端|螢幕共享", re.IGNORECASE),
+        ],
+        types=["可疑連結/下載App"],
+        description="要你點連結、裝 App、遠端協助，超常見套路。",
+    ),
+    Rule(
+        name="投資/高報酬/保證獲利",
+        score=26,
+        patterns=[
+            re.compile(r"保證獲利|穩賺|高報酬|翻倍|幾天回本|躺著賺", re.IGNORECASE),
+            re.compile(r"投資|股票|期貨|虛擬貨幣|比特幣|USDT|合約", re.IGNORECASE),
+            re.compile(r"老師帶單|內線|群組|VIP|拉你進群", re.IGNORECASE),
+        ],
+        types=["投資詐騙"],
+        description="高報酬、保證獲利、帶單群組＝典型投資詐騙味。",
+    ),
+    Rule(
+        name="感情詐騙/借錢",
+        score=24,
+        patterns=[
+            re.compile(r"借錢|周轉|急用|醫藥費|住院|手術費", re.IGNORECASE),
+            re.compile(r"我很愛你|唯一相信你|不要告訴別人|秘密", re.IGNORECASE),
+            re.compile(r"見面前先|先匯|先幫我付", re.IGNORECASE),
+        ],
+        types=["感情借錢"],
+        description="用感情綁架你掏錢或幫忙付費。",
+    ),
+]
+
+
+# -----------------------------
+# Combos (critical boosts)
+# -----------------------------
+def _combo_boost(text: str) -> Tuple[int, List[Dict[str, Any]]]:
+    """回傳 (額外分數, 額外規則列表)"""
+    t = text or ""
+    has_transfer = bool(re.search(r"匯款|轉帳|點數|gift\s*card|禮物卡|ATM", t, re.IGNORECASE))
+    has_otp = bool(re.search(r"驗證碼|OTP|一次性密碼|簡訊碼|密碼|卡號|CVV|安全碼", t, re.IGNORECASE))
+    has_urgent = bool(re.search(r"立即|馬上|現在就|限時|否則|凍結|起訴|通緝", t, re.IGNORECASE))
+
+    extras = []
+    boost = 0
+
+    if has_transfer and has_otp:
+        boost += 25
+        extras.append(
+            {
+                "name": "高危組合：匯款 + 驗證碼/個資",
+                "score": 25,
+                "evidence_sentences": _find_evidence_sentences(
+                    t,
+                    [re.compile(r"匯款|轉帳|點數|ATM|gift\s*card|禮物卡", re.IGNORECASE),
+                     re.compile(r"驗證碼|OTP|密碼|卡號|CVV|安全碼", re.IGNORECASE)]
+                ),
+            }
+        )
+
+    if has_transfer and has_urgent:
+        boost += 18
+        extras.append(
+            {
+                "name": "高危組合：匯款 + 急迫恐嚇",
+                "score": 18,
+                "evidence_sentences": _find_evidence_sentences(
+                    t,
+                    [re.compile(r"匯款|轉帳|點數|ATM|gift\s*card|禮物卡", re.IGNORECASE),
+                     re.compile(r"立即|馬上|限時|否則|凍結|起訴|通緝", re.IGNORECASE)]
+                ),
+            }
+        )
+
+    if has_otp and has_urgent:
+        boost += 18
+        extras.append(
+            {
+                "name": "高危組合：驗證碼/個資 + 急迫恐嚇",
+                "score": 18,
+                "evidence_sentences": _find_evidence_sentences(
+                    t,
+                    [re.compile(r"驗證碼|OTP|密碼|卡號|CVV|安全碼", re.IGNORECASE),
+                     re.compile(r"立即|馬上|限時|否則|凍結|起訴|通緝", re.IGNORECASE)]
+                ),
+            }
+        )
+
+    return boost, extras
+
+
+# -----------------------------
+# Templates & Actions
+# -----------------------------
+ACTIONS = {
+    "low": [
+        "先冷靜，別急著回覆或點連結。",
+        "用官方 App/官網自行登入查證，不要用對方給的連結。",
+        "把訊息截圖留存，覺得怪就先封鎖。"
+    ],
+    "medium": [
+        "先停止互動，不要提供任何個資/驗證碼。",
+        "用官方客服電話/官網自行查證（不要用對方提供的）。",
+        "必要時向 165 反詐騙諮詢或通報。"
+    ],
+    "high": [
+        "立刻停止互動：不要匯款、不要給驗證碼、不要下載 App。",
+        "如果已點連結或安裝 App，先關網路並移除可疑 App。",
+        "聯絡銀行/電信官方管道確認是否有異常，並通報 165。"
+    ],
+    "critical": [
+        "立即停止：不要再回、不要匯款、不要給任何驗證碼/個資。",
+        "如果已轉帳/給碼：立刻聯絡銀行做緊急止付/凍結，並報警或通報 165。",
+        "保留證據（對話、帳號、連結、收款資訊、交易明細）。"
+    ],
+}
+
+TEMPLATES = {
+    "假客服/銀行": [
+        "我會自行透過銀行官方客服/官方 App 查證，不會在這裡提供任何資料。",
+        "請提供你的分機/案件編號，我會用官方電話回撥確認。",
+        "我不會提供驗證碼或密碼，請停止要求。"
+    ],
+    "匯款/點數": [
+        "我不會匯款或購買任何點數/禮物卡，請不要再要求。",
+        "如有問題我會自行向官方查證，請勿再催促。",
+        "請提供正式公文/收據與公司登記資料（我會核對）。"
+    ],
+    "投資": [
+        "我不接受任何保證獲利或帶單投資邀請，請勿再聯絡。",
+        "請提供公司登記/投顧許可證號，我會自行查證。",
+        "我不會加入任何投資群組或提供個資。"
+    ],
+    "感情借錢": [
+        "我理解你很急，但我不會借錢或轉帳給網路認識的人。",
+        "如果真的需要協助，請找家人朋友或正式社福管道。",
+        "我不會用匯款/點數方式幫忙，請見諒。"
+    ],
+}
+
+
+def _pick_templates(scam_types: List[str]) -> List[str]:
+    # 粗略挑 3~5 句最符合的
+    out: List[str] = []
+    if "假冒權威" in scam_types:
+        out += TEMPLATES["假客服/銀行"]
+    if "匯款/點數" in scam_types or "索取個資/驗證碼" in scam_types:
+        out += TEMPLATES["匯款/點數"]
+    if "投資詐騙" in scam_types:
+        out += TEMPLATES["投資"]
+    if "感情借錢" in scam_types:
+        out += TEMPLATES["感情借錢"]
+
+    # 去重 + 取前 5
+    seen = set()
+    final = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            final.append(x)
+    if not final:
+        final = [
+            "我會用官方管道自行查證，不會在這裡提供任何資料。",
+            "我不會匯款、提供驗證碼或點連結，請不要再要求。",
+            "如需聯絡，請提供正式資訊，我會自行向官方確認。"
+        ]
+    return final[:5]
+
+
+def _level_from_score(score: int) -> str:
     if score >= 85:
         return "critical"
-    if score >= 60:
+    if score >= 65:
         return "high"
-    if score >= 30:
+    if score >= 35:
         return "medium"
     return "low"
 
 
-def pick_scenario(rule_names: List[str], text: str) -> str:
-    t = (text or "").lower()
-    names = set(rule_names)
-
-    if "投資詐騙" in names:
-        return "investment"
-    if "感情借錢" in names:
-        return "romance"
-    if "假冒權威/客服" in names:
-        return "customer_service"
-    if "要求匯款/點數" in names:
-        return "transfer"
-
-    if any(k in t for k in ["投資", "獲利", "帶單", "usdt", "btc", "平台"]):
-        return "investment"
-    if any(k in t for k in ["寶貝", "想你", "借我", "急用錢", "醫藥費"]):
-        return "romance"
-    if any(k in t for k in ["客服", "銀行", "警察", "檢察官", "系統通知"]):
-        return "customer_service"
-    return "generic"
-
-
-def build_explanation(level: str, rule_hits: List[RuleHit]) -> str:
-    if not rule_hits:
-        return "未觀察到明顯的詐騙話術特徵，但仍建議保持警覺、避免點擊不明連結。"
-
-    top = sorted(rule_hits, key=lambda x: x.score, reverse=True)[:3]
-    tags = "、".join([h.name for h in top])
-
-    if level == "low":
-        return f"文字中出現一些可疑訊號（{tags}），但整體風險偏低；建議先查證再回覆。"
-    if level == "medium":
-        return f"文字中有多個常見詐騙特徵（{tags}），風險中等；建議停止提供個資並改用官方管道查證。"
-    if level == "high":
-        return f"文字中出現高風險特徵（{tags}），很可能是詐騙；建議立刻停止付款/提供驗證碼並保存證據。"
-    return f"文字中出現多項高危組合（{tags}），極可能是詐騙；請立即止付、保存證據並聯繫 165 或警方。"
-
-
+# -----------------------------
+# Public API: analyze_text
+# -----------------------------
 def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    context = context or {}
-    sentences = sentence_split(text)
-    pat = build_patterns()
+    """
+    回傳格式（穩定）：
+    {
+      "risk_score": int,
+      "risk_level": "low|medium|high|critical",
+      "scam_types": [str],
+      "triggered_rules": [{"name": str, "score": int, "evidence_sentences": [str]}],
+      "explanation": str,
+      "recommended_actions": [str],
+      "reply_templates": [str],
+    }
+    """
+    _ = context  # 第一版先保留，未使用
 
-    hits: List[RuleHit] = []
-    score = 0
+    t = (text or "").strip()
+    if not t:
+        return {
+            "risk_score": 0,
+            "risk_level": "low",
+            "scam_types": [],
+            "triggered_rules": [],
+            "explanation": "沒有提供內容，無法分析。",
+            "recommended_actions": ACTIONS["low"],
+            "reply_templates": _pick_templates([]),
+        }
 
-    for (name, weight, matcher) in default_rules():
-        ev = [s for s in sentences if matcher(s, pat)]
-        if ev:
-            hits.append(RuleHit(name=name, score=weight, evidence_sentences=ev[:4]))
-            score += weight
+    total = 0
+    triggered: List[Dict[str, Any]] = []
+    scam_types: List[str] = []
 
-    names = {h.name for h in hits}
-    combo_hits: List[RuleHit] = []
+    for rule in RULES:
+        evid = _find_evidence_sentences(t, rule.patterns)
+        if evid:
+            total += rule.score
+            triggered.append(
+                {
+                    "name": rule.name,
+                    "score": rule.score,
+                    "evidence_sentences": evid,
+                }
+            )
+            for tp in rule.types:
+                if tp not in scam_types:
+                    scam_types.append(tp)
 
-    # Combo 1: 匯款 + 驗證碼 + 急迫 => 直接 critical
-    if {"要求匯款/點數", "索取個資/驗證碼", "急迫恐嚇"}.issubset(names):
-        combo_hits.append(RuleHit(
-            name="高危組合：匯款 + 驗證碼 + 急迫",
-            score=40,
-            evidence_sentences=[s for s in sentences if (pat.transfer.search(s) or pat.otp.search(s) or pat.urgency.search(s))][:5]
-        ))
-        score = max(score, 95)
+    boost, extra_rules = _combo_boost(t)
+    if boost:
+        total += boost
+        triggered.extend(extra_rules)
 
-    # Combo 2: 權威冒充 + 驗證碼
-    if {"假冒權威/客服", "索取個資/驗證碼"}.issubset(names):
-        combo_hits.append(RuleHit(
-            name="高危組合：假冒權威/客服 + 索取驗證碼",
-            score=25,
-            evidence_sentences=[s for s in sentences if (pat.impersonation.search(s) or pat.otp.search(s))][:5]
-        ))
-        score = max(score, 85)
+    risk_score = _cap(total, 0, 100)
+    risk_level = _level_from_score(risk_score)
 
-    # Combo 3: 連結/下載 + 驗證碼
-    if {"可疑連結/下載App", "索取個資/驗證碼"}.issubset(names):
-        combo_hits.append(RuleHit(
-            name="高危組合：連結/下載App + 索取驗證碼",
-            score=20,
-            evidence_sentences=[s for s in sentences if (pat.url.search(s) or pat.apk.search(s) or pat.otp.search(s))][:5]
-        ))
-        score = max(score, 80)
+    # 解釋：不要太長，讓人一眼懂
+    if risk_level in ("high", "critical"):
+        explain = "這段訊息同時出現多個高風險特徵（例如：急迫恐嚇、匯款/點數、索取驗證碼或假冒權威），非常像詐騙流程。"
+    elif risk_level == "medium":
+        explain = "訊息有一些詐騙常見語氣/要求（例如要你快點做、或提到帳戶異常/連結），建議用官方管道查證後再處理。"
+    else:
+        explain = "目前看起來沒有明顯高危要求，但仍建議不要點不明連結、不要提供個資，必要時用官方管道確認。"
 
-    if combo_hits:
-        hits.extend(combo_hits)
-
-    score = max(0, min(100, score))
-    level = score_to_level(score)
-
-    explanation = build_explanation(level, hits)
-    recommended_actions = ACTIONS_BY_LEVEL[level]
-    scenario = pick_scenario([h.name for h in hits], text)
-    templates = REPLY_TEMPLATES.get(scenario, REPLY_TEMPLATES["generic"])
-    reply_templates = templates[:3] if level in ("low", "medium") else templates[:5]
+    actions = ACTIONS[risk_level]
+    templates = _pick_templates(scam_types)
 
     return {
-        "risk_score": score,
-        "risk_level": level,
-        "triggered_rules": [asdict(h) for h in sorted(hits, key=lambda x: x.score, reverse=True)],
-        "explanation": explanation,
-        "recommended_actions": recommended_actions,
-        "reply_templates": reply_templates,
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "scam_types": scam_types,
+        "triggered_rules": triggered,
+        "explanation": explain,
+        "recommended_actions": actions,
+        "reply_templates": templates,
     }
-
-
-def cli_main():
-    p = argparse.ArgumentParser(description="ScamShield - rule-based 防詐文字分析器")
-    p.add_argument("--text", type=str, default="", help='分析文字，例如 --text "..."')
-    p.add_argument("--format", type=str, default="json", choices=["json"], help="輸出格式（單檔版先給 json）")
-    args = p.parse_args()
-
-    result = analyze_text(args.text)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-
-
-if __name__ == "__main__":
-    cli_main()
