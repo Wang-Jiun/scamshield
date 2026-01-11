@@ -5,7 +5,7 @@ import os
 import time
 import secrets
 import hashlib
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, Request, Header, HTTPException, Depends
@@ -49,8 +49,8 @@ def _utc_day() -> str:
 
 
 def _utc_hour() -> str:
-    # e.g. "2026-01-11 05:00"
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:00")
+    # e.g. "2026-01-11 05"
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H")
 
 
 def _now_iso_utc() -> str:
@@ -58,21 +58,19 @@ def _now_iso_utc() -> str:
 
 
 def _prune_hourly(max_hours: int = 48) -> None:
-    hourly = _STATS.get("hourly") or {}
-    keys = sorted(hourly.keys())
+    keys = sorted(_STATS["hourly"].keys())
     if len(keys) <= max_hours:
         return
     for k in keys[:-max_hours]:
-        hourly.pop(k, None)
+        _STATS["hourly"].pop(k, None)
 
 
 def _prune_daily(max_days: int = 90) -> None:
-    daily = _STATS.get("daily") or {}
-    keys = sorted(daily.keys())
+    keys = sorted(_STATS["daily"].keys())
     if len(keys) <= max_days:
         return
     for k in keys[:-max_days]:
-        daily.pop(k, None)
+        _STATS["daily"].pop(k, None)
 
 
 def _client_ip(req: Request) -> str:
@@ -346,8 +344,300 @@ def health():
     return {"ok": True}
 
 
-# 你的 home() / analyze_web() / paid API 都照你原本的放著（略）
-# （你已經寫好了，我這裡不重複貼，避免你複製到手軟）
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return """
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ScamShield 防詐分析</title>
+  <style>
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:#0b0f14;color:#e6edf3;margin:0}
+    .wrap{max-width:1080px;margin:0 auto;padding:24px}
+    .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
+    .card{background:#101826;border:1px solid #1f2a3a;border-radius:16px;padding:18px;margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    textarea{width:100%;min-height:180px;border-radius:12px;border:1px solid #2a3a52;background:#0b1220;color:#e6edf3;padding:12px;font-size:16px;resize:vertical;outline:none}
+    button{border:0;border-radius:12px;padding:12px 16px;background:#00ff88;color:#04210f;font-weight:900;cursor:pointer}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:999px;border:1px solid #2a3a52;background:#0b1220}
+    pre{white-space:pre-wrap;word-break:break-word;background:#0b1220;border:1px solid #2a3a52;border-radius:12px;padding:12px;margin:0}
+    .lvl{font-weight:1000}
+    .low{color:#2ecc71}.medium{color:#f1c40f}.high{color:#e74c3c}.critical{color:#ff3b30}
+    a{color:#00ff88}
+    .small{opacity:.85;font-size:13px}
+    .tag{display:inline-block;margin:4px 6px 0 0;padding:6px 10px;border-radius:999px;background:#0b1220;border:1px solid #2a3a52}
+    .copy{background:#1f2a3a;color:#e6edf3;font-weight:800}
+    .muted{opacity:.75}
+    .hr{height:1px;background:#1f2a3a;margin:12px 0}
+    .checkbox{display:flex;gap:10px;align-items:center;user-select:none}
+    .checkbox input{width:18px;height:18px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛡️ ScamShield 防詐文字分析</h1>
+
+  <div class="card">
+    <p>貼上你收到的訊息（簡訊/LINE/FB/Email 都可以），按下分析。<span class="small">（上線版不會幫你存內容，別緊張）</span></p>
+
+    <textarea id="text" placeholder="例如：你的帳戶異常，請立即匯款並提供驗證碼，否則凍結..."></textarea>
+
+    <div class="row" style="margin-top:12px">
+      <button id="btn" onclick="run()">分析</button>
+      <span class="pill">⚠️ 這是輔助判斷工具，請以官方管道查證</span>
+      <span class="pill">Swagger：<a href="/docs" target="_blank" rel="noreferrer">/docs</a></span>
+      <span class="pill">API 文件：<a href="/api-docs" target="_blank" rel="noreferrer">/api-docs</a></span>
+      <span class="pill">Stats：<a href="#" onclick="openStats();return false;">/stats-ui</a></span>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <label class="checkbox small">
+        <input id="allowStats" type="checkbox" checked />
+        允許匿名統計（不存原文，只記次數/等級/類型）
+      </label>
+      <span class="small muted">* 你不勾我就當沒看到，統計直接放生。</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card" id="out" style="display:none">
+      <h2>結果</h2>
+      <div class="row">
+        <div>風險分數：<span id="score" class="lvl"></span></div>
+        <div>風險等級：<span id="level" class="lvl"></span></div>
+      </div>
+
+      <div class="hr"></div>
+
+      <h3>詐騙類型</h3>
+      <div id="types"></div>
+
+      <h3>簡短說明</h3>
+      <pre id="explain"></pre>
+
+      <h3>建議行動</h3>
+      <pre id="actions"></pre>
+
+      <h3>可直接複製回覆模板</h3>
+      <div class="row" style="margin:8px 0">
+        <button class="copy" onclick="copyTemplates()">一鍵複製模板</button>
+        <span class="small" id="copyhint"></span>
+      </div>
+      <pre id="templates"></pre>
+
+      <details style="margin-top:10px">
+        <summary>查看命中規則與證據句（進階）</summary>
+        <pre id="rules"></pre>
+      </details>
+    </div>
+
+    <div class="card" id="urlsCard" style="display:none">
+      <h2>可疑網址（請先不要點）</h2>
+      <div class="small muted">看到短網址 tinyurl/bit.ly 這種，先當它是詐騙，靠杯真的。</div>
+      <div class="hr"></div>
+      <pre id="urls"></pre>
+    </div>
+  </div>
+
+  <p class="small muted" style="margin-top:14px">
+    Web API: <code>POST /analyze</code>，健康檢查：<code>/health</code> ｜ Paid API: <code>POST /api/v1/analyze</code>（需要 API Key）
+  </p>
+</div>
+
+<script>
+let lastTemplates = "";
+
+function openStats(){
+  const key = prompt("輸入 ADMIN_KEY 才能看後台");
+  if(!key) return;
+  window.open("/stats-ui?k=" + encodeURIComponent(key), "_blank");
+}
+
+async function run(){
+  const btn = document.getElementById("btn");
+  const text = document.getElementById("text").value.trim();
+  const allow_anon_stats = document.getElementById("allowStats").checked;
+
+  if(!text){ alert("先貼文字啦靠杯 🤣"); return; }
+
+  btn.disabled = true; btn.textContent="分析中…";
+  document.getElementById("copyhint").textContent = "";
+  document.getElementById("urlsCard").style.display = "none";
+
+  try{
+    const res = await fetch("/analyze", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ text, allow_anon_stats })
+    });
+
+    const data = await res.json().catch(()=> ({}));
+    if(!res.ok){
+      alert(data.detail || ("出事了，HTTP " + res.status));
+      return;
+    }
+
+    document.getElementById("out").style.display = "block";
+    document.getElementById("score").textContent = data.risk_score;
+
+    const levelEl = document.getElementById("level");
+    levelEl.textContent = data.risk_level;
+    levelEl.className = "lvl " + data.risk_level;
+
+    const typesEl = document.getElementById("types");
+    typesEl.innerHTML = "";
+    (data.scam_types || []).forEach(t=>{
+      const span = document.createElement("span");
+      span.className = "tag";
+      span.textContent = t;
+      typesEl.appendChild(span);
+    });
+    if((data.scam_types || []).length === 0){
+      typesEl.innerHTML = "<span class='small'>（目前沒有明顯類型，但仍建議你用官方管道確認）</span>";
+    }
+
+    document.getElementById("explain").textContent = data.explanation || "";
+    document.getElementById("actions").textContent = (data.recommended_actions || []).map(x=>"• "+x).join("\\n");
+
+    const tpl = (data.reply_templates || []).map((x,i)=>`${i+1}. ${x}`).join("\\n");
+    document.getElementById("templates").textContent = tpl;
+    lastTemplates = tpl;
+
+    document.getElementById("rules").textContent = JSON.stringify(data.triggered_rules || [], null, 2);
+
+    const urls = (data.suspicious_urls || []);
+    if(urls.length){
+      document.getElementById("urlsCard").style.display = "block";
+      document.getElementById("urls").textContent = urls.map(u=>"• " + u).join("\\n");
+    }
+
+    document.getElementById("out").scrollIntoView({behavior:"smooth", block:"start"});
+  }catch(e){
+    alert("出事了：" + e);
+  }finally{
+    btn.disabled=false; btn.textContent="分析";
+  }
+}
+
+async function copyTemplates(){
+  if(!lastTemplates){ return; }
+  try{
+    await navigator.clipboard.writeText(lastTemplates);
+    document.getElementById("copyhint").textContent = "✅ 已複製，貼去回對方就好（別被騙啦）";
+  }catch(e){
+    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製，你手動選取也行";
+  }
+}
+</script>
+</body>
+</html>
+"""
+
+
+# =========================
+# Web analyze (IP rate limit + optional anon stats)
+# =========================
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze_web(body: AnalyzeRequest, req: Request):
+    ip = _client_ip(req)
+    if not _rate_limit_ok_ip(ip):
+        return JSONResponse(status_code=429, content={"detail": "太多次啦靠杯（rate limit）— 請稍後再試"})
+
+    text = (body.text or "").strip()
+    if not text:
+        return JSONResponse(status_code=400, content={"detail": "text 不能是空的"})
+    if len(text) > MAX_TEXT_CHARS:
+        return JSONResponse(status_code=400, content={"detail": f"text 太長（最多 {MAX_TEXT_CHARS} 字）"})
+
+    try:
+        result = analyze_text(text, context=body.context)
+
+        suspicious_urls = _extract_suspicious_urls_from_result(result)
+        if suspicious_urls:
+            result["suspicious_urls"] = suspicious_urls
+
+        response = {
+            "request_id": secrets.token_hex(8),
+            **result,
+            "policy_version": POLICY_VERSION,
+            "model_version": MODEL_VERSION,
+        }
+
+        if bool(body.allow_anon_stats):
+            anon_id = _stable_anon_id(text)
+            summary = {
+                "ts_utc": _now_iso_utc(),
+                "risk_level": str(response.get("risk_level", "")).lower(),
+                "risk_score": int(response.get("risk_score", 0) or 0),
+                "scam_types": response.get("scam_types", []) or [],
+                "anon_id": anon_id,
+            }
+            _stats_add(summary)
+
+        return response
+
+    except Exception:
+        return JSONResponse(status_code=500, content={"detail": "Internal error"})
+
+
+# =========================
+# Paid API (API key + daily quota)
+# =========================
+
+@app.get("/api/v1/usage")
+async def api_usage(auth=Depends(require_api_key)):
+    day = _utc_day()
+    api_key = auth["api_key"]
+    plan = auth["plan"]
+    quotas = _parse_plan_quotas()
+    quota = int(quotas.get(plan, 0))
+    used = int(_usage_by_key.get(api_key, {}).get(day, 0))
+    remaining = max(quota - used, 0)
+
+    return {
+        "day_utc": day,
+        "plan": plan,
+        "quota": quota,
+        "used": used,
+        "remaining": remaining,
+        "key": _mask_key(api_key),
+        "policy_version": POLICY_VERSION,
+        "model_version": MODEL_VERSION,
+    }
+
+
+@app.post("/api/v1/analyze", response_model=AnalyzeResponse)
+async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
+    text = (body.text or "").strip()
+    if not text:
+        return JSONResponse(status_code=400, content={"detail": "text 不能是空的"})
+    if len(text) > MAX_TEXT_CHARS:
+        return JSONResponse(status_code=400, content={"detail": f"text 太長（最多 {MAX_TEXT_CHARS} 字）"})
+
+    quotas = _parse_plan_quotas()
+    used, remaining, quota = _check_and_inc_usage(auth["api_key"], auth["plan"], quotas)
+    if used > quota:
+        return JSONResponse(status_code=429, content={"detail": "API quota exceeded", "plan": auth["plan"], "day_utc": _utc_day()})
+
+    try:
+        result = analyze_text(text, context=body.context)
+        suspicious_urls = _extract_suspicious_urls_from_result(result)
+        if suspicious_urls:
+            result["suspicious_urls"] = suspicious_urls
+
+        return {
+            "request_id": secrets.token_hex(8),
+            **result,
+            "policy_version": POLICY_VERSION,
+            "model_version": MODEL_VERSION,
+        }
+    except Exception:
+        return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
 
 # =========================
@@ -356,59 +646,30 @@ def health():
 
 @app.get("/stats")
 async def stats_json(_=Depends(require_admin)):
-    total = int(_STATS.get("total", 0) or 0)
+    total = int(_STATS["total"])
 
-    # avg_score：用 daily 的 total+score_sum 算「整體平均」（穩）
-    daily = _STATS.get("daily") or {}
-    total2 = 0
-    score_sum2 = 0
-    for _, d in daily.items():
-        total2 += int(d.get("total", 0) or 0)
-        score_sum2 += int(d.get("score_sum", 0) or 0)
-
-    if total2 > 0:
-        avg_score = score_sum2 / total2
-    else:
-        # fallback：沒 daily 的時候用 last_50 算
-        last_50 = _STATS.get("last_50") or []
-        scores = [int(x.get("risk_score", 0) or 0) for x in last_50 if isinstance(x, dict)]
-        avg_score = (sum(scores) / len(scores)) if scores else 0.0
+    score_sum_all = 0
+    for _, d in (_STATS.get("daily") or {}).items():
+        score_sum_all += int(d.get("score_sum", 0) or 0)
+    avg_score = (score_sum_all / total) if total > 0 else 0.0
 
     bt = _STATS.get("by_type") or {}
-    top_types = sorted(bt.items(), key=lambda x: int(x[1]), reverse=True)[:10]
+    top_types = sorted(bt.items(), key=lambda x: x[1], reverse=True)[:10]
 
-    # 近 24 小時：固定回傳 24 個 hour（補 0）
-    hourly = _STATS.get("hourly") or {}
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    hourly_24h = []
-    for i in range(24):
-        dt = now - timedelta(hours=23 - i)
-        k = dt.strftime("%Y-%m-%d %H:00")
-        rec = hourly.get(k) or {"total": 0, "score_sum": 0, "by_level": {"low": 0, "medium": 0, "high": 0, "critical": 0}}
-        hourly_24h.append({
-            "hour": k,
-            "total": int(rec.get("total", 0) or 0),
-        })
+    hourly_keys = sorted((_STATS.get("hourly") or {}).keys())[-24:]
+    hourly_24h = [{"hour": k, **_STATS["hourly"][k]} for k in hourly_keys]
 
-    # 近 7 天：固定回傳 7 個 day（補 0）
-    daily_7d = []
-    for i in range(7):
-        dt = now.date() - timedelta(days=6 - i)
-        k = dt.strftime("%Y-%m-%d")
-        rec = daily.get(k) or {"total": 0, "score_sum": 0, "by_level": {"low": 0, "medium": 0, "high": 0, "critical": 0}, "by_type": {}}
-        daily_7d.append({
-            "day": k,
-            "total": int(rec.get("total", 0) or 0),
-        })
+    daily_keys = sorted((_STATS.get("daily") or {}).keys())[-7:]
+    daily_7d = [{"day": k, **_STATS["daily"][k]} for k in daily_keys]
 
     return {
-        "since_epoch": int(_STATS.get("since_epoch", int(time.time()))),
+        "since_epoch": _STATS["since_epoch"],
         "total": total,
-        "avg_score": float(avg_score),
-        "by_level": _STATS.get("by_level") or {"low": 0, "medium": 0, "high": 0, "critical": 0},
-        "by_type": _STATS.get("by_type") or {},
+        "avg_score": avg_score,
+        "by_level": _STATS["by_level"],
+        "by_type": _STATS["by_type"],
         "top_types": top_types,
-        "last_50": _STATS.get("last_50") or [],
+        "last_50": _STATS["last_50"],
         "hourly_24h": hourly_24h,
         "daily_7d": daily_7d,
     }
@@ -426,10 +687,6 @@ async def reset_stats(_=Depends(require_admin)):
     return {"ok": True}
 
 
-# =========================
-# Stats UI（你貼的那份 그대로，OK）
-# =========================
-
 @app.get("/stats-ui", response_class=HTMLResponse)
 async def stats_ui(req: Request):
     admin_key = os.getenv("ADMIN_KEY", "").strip()
@@ -437,6 +694,9 @@ async def stats_ui(req: Request):
     if not admin_key or not k or not secrets.compare_digest(k, admin_key):
         return HTMLResponse(status_code=401, content="<pre>Unauthorized. 你沒帶 ADMIN_KEY </pre>")
 
+
+
+    # ✅ 不用 f-string，避免 JS template literal 的 ${...} 讓 Python 爆炸
     return """
 <!doctype html>
 <html lang="zh-Hant">
@@ -677,6 +937,156 @@ async function resetStats(){
 }
 
 reload();
+</script>
+</body>
+</html>
+"""
+
+@app.get("/api-docs", response_class=HTMLResponse)
+async def api_docs():
+    return """
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>ScamShield 外部 API 文件</title>
+  <style>
+    :root{
+      --bg:#0b0f14; --card:#101826; --line:#1f2a3a; --soft:#0b1220;
+      --txt:#e6edf3; --muted:rgba(230,237,243,.75); --acc:#00ff88;
+      --danger:#ff3b30; --r:16px;
+    }
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:var(--bg);color:var(--txt);margin:0}
+    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-top:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    h1{margin:0 0 8px 0}
+    h2{margin:0 0 10px 0}
+    p{color:var(--muted);line-height:1.6;margin:8px 0}
+    a{color:var(--acc)}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;gap:8px;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid #2a3a52;background:var(--soft);font-size:13px}
+    .hr{height:1px;background:var(--line);margin:12px 0}
+    code, pre{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    pre{white-space:pre;overflow:auto;background:var(--soft);border:1px solid #2a3a52;border-radius:12px;padding:12px;margin:0}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top}
+    th{color:var(--muted);font-weight:700}
+    .muted{color:var(--muted)}
+    .warn{color:#ffd166}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🛡️ ScamShield 外部 API 文件</h1>
+  <p>給外部系統串接用的防詐文字分析 API。<span class="muted">（不儲存原文，放心啦）</span></p>
+
+  <div class="row">
+    <span class="pill">Base URL：<code id="base">-</code></span>
+    <a class="pill" href="/docs" target="_blank" rel="noreferrer">Swagger：/docs</a>
+    <a class="pill" href="/openapi.json" target="_blank" rel="noreferrer">OpenAPI：/openapi.json</a>
+    <a class="pill" href="/" target="_blank" rel="noreferrer">回首頁</a>
+  </div>
+
+  <div class="card">
+    <h2>1) 驗證方式（API Key）</h2>
+    <p>支援兩種帶法（擇一即可）：</p>
+    <p class="muted">A. <code>X-API-Key: &lt;key&gt;</code></p>
+    <p class="muted">B. <code>Authorization: Bearer &lt;key&gt;</code></p>
+    <div class="hr"></div>
+    <p class="warn">⚠️ 不要把 Key 寫死在前端！不然你會被自己氣死，靠杯。</p>
+  </div>
+
+  <div class="card">
+    <h2>2) 端點一覽</h2>
+    <table>
+      <thead>
+        <tr><th>方法</th><th>路徑</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>POST</td><td><code>/api/v1/analyze</code></td><td>分析文字內容（需要 API Key）</td></tr>
+        <tr><td>GET</td><td><code>/api/v1/usage</code></td><td>查詢今日用量 / 剩餘額度（需要 API Key）</td></tr>
+        <tr><td>POST</td><td><code>/analyze</code></td><td>Web UI 使用（依 IP rate limit）</td></tr>
+        <tr><td>GET</td><td><code>/health</code></td><td>健康檢查</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>3) POST /api/v1/analyze</h2>
+    <p class="muted">Request JSON：</p>
+<pre><code>{
+  "text": "要分析的文字（必填）",
+  "context": { "可選：額外上下文" },
+  "allow_anon_stats": true
+}</code></pre>
+    <div class="hr"></div>
+    <p class="muted">curl 範例（X-API-Key）：</p>
+<pre><code>curl -X POST "{BASE}/api/v1/analyze" \\
+  -H "X-API-Key: YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"你的帳戶異常，請立即匯款並提供驗證碼..."}'</code></pre>
+    <div class="hr"></div>
+    <p class="muted">curl 範例（Bearer）：</p>
+<pre><code>curl -X POST "{BASE}/api/v1/analyze" \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"text":"你已中獎，請點此連結領取..."}'</code></pre>
+  </div>
+
+  <div class="card">
+    <h2>4) Response 欄位（重要）</h2>
+    <table>
+      <thead>
+        <tr><th>欄位</th><th>型別</th><th>說明</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>risk_score</code></td><td>int</td><td>0~100，越高越危險</td></tr>
+        <tr><td><code>risk_level</code></td><td>string</td><td><code>low / medium / high / critical</code></td></tr>
+        <tr><td><code>scam_types</code></td><td>string[]</td><td>詐騙類型（可能為空）</td></tr>
+        <tr><td><code>triggered_rules</code></td><td>object[]</td><td>命中規則與證據句（進階）</td></tr>
+        <tr><td><code>explanation</code></td><td>string</td><td>簡短原因說明（給人看）</td></tr>
+        <tr><td><code>recommended_actions</code></td><td>string[]</td><td>建議下一步怎麼做</td></tr>
+        <tr><td><code>reply_templates</code></td><td>string[]</td><td>可複製回覆模板</td></tr>
+        <tr><td><code>suspicious_urls</code></td><td>string[]?</td><td>可疑網址（如果有抓到）</td></tr>
+        <tr><td><code>policy_version</code></td><td>string</td><td>規則版本</td></tr>
+        <tr><td><code>model_version</code></td><td>string</td><td>引擎版本</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>5) 常見錯誤（HTTP）</h2>
+    <table>
+      <thead>
+        <tr><th>HTTP</th><th>原因</th><th>怎麼辦</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>400</td><td>text 空或超長</td><td>檢查輸入文字</td></tr>
+        <tr><td>401</td><td>Missing/Invalid API key</td><td>確認 header 帶對</td></tr>
+        <tr><td>429</td><td>Quota exceeded / rate limit</td><td>等待或升級配額</td></tr>
+        <tr><td>500</td><td>Internal error</td><td>稍後重試；必要時回報</td></tr>
+      </tbody>
+    </table>
+    <p class="muted">備註：你也可以導到 <code>/api/v1/usage</code> 讓客戶自己看剩多少。</p>
+  </div>
+
+  <div class="card">
+    <h2>6) 限制與隱私</h2>
+    <p class="muted">
+      • 最大文字長度：依伺服器設定（你目前 <code>MAX_TEXT_CHARS</code>）。<br/>
+      • 不儲存原文：匿名統計（若啟用）也只有「不可逆指紋 + 類型統計」。<br/>
+      • 這是輔助判斷工具：最終仍建議用官方管道查證。
+    </p>
+  </div>
+
+  <p class="muted" style="margin-top:14px">© ScamShield — 別被詐騙搞到血壓上來，靠杯。</p>
+</div>
+
+<script>
+const base = location.origin;
+document.getElementById("base").textContent = base;
+document.body.innerHTML = document.body.innerHTML.replaceAll("{BASE}", base);
 </script>
 </body>
 </html>
