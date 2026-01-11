@@ -13,23 +13,25 @@ from pydantic import BaseModel, Field
 
 from scamshield import analyze_text
 
-app = FastAPI(title="ScamShield Web", version="1.4.0")
+app = FastAPI(title="ScamShield Web", version="1.4.1")
 
 MAX_TEXT_CHARS = 5000
 RATE_LIMIT_PER_MIN = 30
 
-# 你原本的 IP rate limit（給 /analyze 用）
+# 網站用 IP rate limit（只給 /analyze）
 _rate_ip: Dict[str, list] = {}
 
-# API 授權用量（先用記憶體：簡單可上線；多 instance 會不準，之後可升級 DB/Redis）
+# 付費 API 用量（記憶體版：單 instance OK，多 instance 之後再升級 DB/Redis）
 _usage_by_key: Dict[str, Dict[str, int]] = {}  # api_key -> {"YYYY-MM-DD": count}
 
 POLICY_VERSION = "2026.01"
 MODEL_VERSION = "rules-v1"
 
 
+# -------------------------
+# Helpers
+# -------------------------
 def _utc_day() -> str:
-    # 用 UTC 天做每日配額（不怕時區漂移）
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
@@ -57,7 +59,6 @@ def _rate_limit_ok_ip(ip: str) -> bool:
 
 
 def _parse_plan_quotas() -> Dict[str, int]:
-    # Render env: PLAN_DAILY_QUOTAS='{"free":50,"pro":500,"enterprise":999999}'
     raw = os.getenv("PLAN_DAILY_QUOTAS", '{"free":50,"pro":500,"enterprise":999999}')
     try:
         data = json.loads(raw)
@@ -66,7 +67,6 @@ def _parse_plan_quotas() -> Dict[str, int]:
             out[str(k).lower()] = int(v)
         return out
     except Exception:
-        # 如果 env 壞掉就用保底值
         return {"free": 50, "pro": 500, "enterprise": 999999}
 
 
@@ -92,29 +92,44 @@ def _parse_api_keys() -> Dict[str, str]:
     return out
 
 
-def _check_and_inc_usage(api_key: str, plan: str, quotas: Dict[str, int]) -> Tuple[int, int]:
+def _mask_key(k: str) -> str:
+    if len(k) <= 8:
+        return "***"
+    return k[:4] + "..." + k[-4:]
+
+
+def _quota_for(plan: str, quotas: Dict[str, int]) -> int:
+    return int(quotas.get(plan, 0))
+
+
+def _get_used_today(api_key: str) -> int:
+    day = _utc_day()
+    return int(_usage_by_key.get(api_key, {}).get(day, 0))
+
+
+def _inc_and_get_usage(api_key: str, quota: int) -> Tuple[int, int]:
     """
-    回傳 (used_today, remaining_today)
+    先檢查、允許才 +1
+    回傳 (used_after_inc, remaining_after_inc)
+    若已滿額，丟 HTTPException 429
     """
     day = _utc_day()
-    quota = int(quotas.get(plan, 0))
-
     per_key = _usage_by_key.setdefault(api_key, {})
     used = int(per_key.get(day, 0))
 
+    if quota <= 0:
+        raise HTTPException(status_code=403, detail="Plan quota is not configured")
+
     if used >= quota:
-        return used, 0
+        raise HTTPException(
+            status_code=429,
+            detail="API quota exceeded",
+        )
 
     used += 1
     per_key[day] = used
     remaining = max(quota - used, 0)
     return used, remaining
-
-
-def _mask_key(k: str) -> str:
-    if len(k) <= 8:
-        return "***"
-    return k[:4] + "..." + k[-4:]
 
 
 async def require_api_key(
@@ -139,18 +154,40 @@ async def require_api_key(
     if not key:
         raise HTTPException(status_code=401, detail="Missing API key")
 
-    # 管理者 key：全通
+    # 管理者 key：全通（視同 enterprise）
     if admin_key and secrets.compare_digest(key, admin_key):
-        return {"api_key": key, "plan": "enterprise", "is_admin": True, "quota": quotas.get("enterprise", 999999)}
+        return {
+            "api_key": key,
+            "plan": "enterprise",
+            "is_admin": True,
+            "quota": _quota_for("enterprise", quotas),
+        }
 
-    # 一般 key
     plan = keys.get(key)
     if not plan:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    return {"api_key": key, "plan": plan, "is_admin": False, "quota": quotas.get(plan, 0)}
+    return {
+        "api_key": key,
+        "plan": plan,
+        "is_admin": False,
+        "quota": _quota_for(plan, quotas),
+    }
 
 
+def _with_rate_headers(resp: JSONResponse, plan: str, quota: int, used: int) -> JSONResponse:
+    # 更像商業產品：X-RateLimit headers
+    remaining = max(quota - used, 0)
+    resp.headers["X-RateLimit-Plan"] = plan
+    resp.headers["X-RateLimit-Limit"] = str(quota)
+    resp.headers["X-RateLimit-Remaining"] = str(remaining)
+    resp.headers["X-RateLimit-Reset-UTC"] = _utc_day()
+    return resp
+
+
+# -------------------------
+# API / Models
+# -------------------------
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -180,9 +217,11 @@ class AnalyzeResponse(BaseModel):
     model_version: str
 
 
+# -------------------------
+# Web UI
+# -------------------------
 @app.get("/", response_class=HTMLResponse)
 def home():
-    # 你原本前端不動（略），維持現在上線的版本就行
     return """
 <!doctype html>
 <html lang="zh-Hant">
@@ -252,7 +291,7 @@ def home():
   </div>
 
   <p class="small">Web API: <code>POST /analyze</code>，健康檢查：<code>/health</code></p>
-  <p class="small">Paid API: <code>POST /api/v1/analyze</code>（需要 API Key）</p>
+  <p class="small">Paid API: <code>POST /api/v1/analyze</code>（需要 API Key），用量：<code>/api/v1/usage</code></p>
 </div>
 
 <script>
@@ -328,9 +367,11 @@ async function copyTemplates(){
 """
 
 
+# -------------------------
+# Web Analyze (no API key)
+# -------------------------
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_web(body: AnalyzeRequest, req: Request):
-    # 給網站用：IP rate limit
     ip = _client_ip(req)
     if not _rate_limit_ok_ip(ip):
         return JSONResponse(status_code=429, content={"detail": "太多次啦靠杯（rate limit）— 請稍後再試"})
@@ -343,7 +384,6 @@ async def analyze_web(body: AnalyzeRequest, req: Request):
 
     try:
         result = analyze_text(text, context=body.context)
-        # 商業化欄位補上
         return {
             "request_id": secrets.token_hex(8),
             **result,
@@ -354,33 +394,29 @@ async def analyze_web(body: AnalyzeRequest, req: Request):
         return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(e).__name__}"})
 
 
-# =========================
-# 付費 API（需要 API Key）
-# =========================
-
+# -------------------------
+# Paid API (requires API key)
+# -------------------------
 @app.get("/api/v1/usage")
 async def api_usage(auth=Depends(require_api_key)):
-    day = _utc_day()
-    api_key = auth["api_key"]
-    plan = auth["plan"]
     quotas = _parse_plan_quotas()
-    quota = int(quotas.get(plan, 0))
-    used = int(_usage_by_key.get(api_key, {}).get(day, 0))
+    quota = _quota_for(auth["plan"], quotas)
+    used = _get_used_today(auth["api_key"])
     remaining = max(quota - used, 0)
-
     return {
-        "day_utc": day,
-        "plan": plan,
+        "day_utc": _utc_day(),
+        "plan": auth["plan"],
         "quota": quota,
         "used": used,
         "remaining": remaining,
-        "key": _mask_key(api_key),
+        "key": _mask_key(auth["api_key"]),
+        "policy_version": POLICY_VERSION,
+        "model_version": MODEL_VERSION,
     }
 
 
 @app.post("/api/v1/analyze", response_model=AnalyzeResponse)
 async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
-    # 付費 API：用 API key 做每日配額
     text = (body.text or "").strip()
     if not text:
         return JSONResponse(status_code=400, content={"detail": "text 不能是空的"})
@@ -388,12 +424,17 @@ async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
         return JSONResponse(status_code=400, content={"detail": f"text 太長（最多 {MAX_TEXT_CHARS} 字）"})
 
     quotas = _parse_plan_quotas()
-    used, remaining = _check_and_inc_usage(auth["api_key"], auth["plan"], quotas)
-    if remaining == 0 and used >= int(quotas.get(auth["plan"], 0)):
+    quota = _quota_for(auth["plan"], quotas)
+
+    # 先扣額度（滿額直接 429）
+    try:
+        used_after, remaining_after = _inc_and_get_usage(auth["api_key"], quota)
+    except HTTPException as he:
+        # 429 / 403 等直接回
         return JSONResponse(
-            status_code=429,
+            status_code=he.status_code,
             content={
-                "detail": "API quota exceeded",
+                "detail": he.detail,
                 "plan": auth["plan"],
                 "day_utc": _utc_day(),
             },
@@ -401,11 +442,16 @@ async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
 
     try:
         result = analyze_text(text, context=body.context)
-        return {
-            "request_id": secrets.token_hex(8),
-            **result,
-            "policy_version": POLICY_VERSION,
-            "model_version": MODEL_VERSION,
-        }
+        resp = JSONResponse(
+            status_code=200,
+            content={
+                "request_id": secrets.token_hex(8),
+                **result,
+                "policy_version": POLICY_VERSION,
+                "model_version": MODEL_VERSION,
+            },
+        )
+        return _with_rate_headers(resp, auth["plan"], quota, used_after)
     except Exception as e:
+        # 如果分析失敗，理論上要把扣掉的額度補回去（這裡簡化：不補回，避免被濫用）
         return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(e).__name__}"})
