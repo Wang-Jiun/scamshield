@@ -16,6 +16,40 @@ from scamshield import analyze_text
 
 app = FastAPI(title="ScamShield Web", version="1.6.0")
 
+# ======================
+# LINE Bot 設定（全域）
+# ======================
+import requests
+
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "")
+
+def _line_reply(reply_token: str, text: str) -> None:
+    """
+    用 LINE Messaging API 回覆文字訊息
+    """
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        print("LINE_CHANNEL_ACCESS_TOKEN missing")
+        return
+
+    url = "https://api.line.me/v2/bot/message/reply"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+    }
+    payload = {
+        "replyToken": reply_token,
+        "messages": [{"type": "text", "text": text[:5000]}],
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        if r.status_code >= 400:
+            print("LINE reply failed:", r.status_code, r.text)
+    except Exception as e:
+        print("LINE reply exception:", e)
+
 MAX_TEXT_CHARS = 5000
 RATE_LIMIT_PER_MIN = 30
 
@@ -42,7 +76,6 @@ _STATS: Dict[str, Any] = {
     "daily": {},   # day -> {total, score_sum, by_level, by_type}
     "hourly": {},  # hour -> {total, score_sum, by_level}
 }
-
 
 def _utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -344,14 +377,42 @@ def health():
     return {"ok": True}
 
 @app.post("/line/webhook")
-async def line_webhook(
-    req: Request,
-    x_line_signature: str = Header(None)
-):
-    body = await req.body()
-    print("LINE webhook received:", body.decode("utf-8"))
+async def line_webhook(req: Request, x_line_signature: str = Header(None)):
+    body = await req.json()
+    events = body.get("events", [])
 
-    # 先不驗簽、不回訊息，只要讓 LINE 不爆炸
+    for ev in events:
+        if ev.get("type") != "message":
+            continue
+        msg = ev.get("message", {})
+        if msg.get("type") != "text":
+            continue
+
+        user_text = (msg.get("text") or "").strip()
+        reply_token = ev.get("replyToken")
+        if not reply_token:
+            continue
+
+        try:
+            result = analyze_text(user_text, context=None)
+            level = result.get("risk_level", "unknown")
+            score = result.get("risk_score", 0)
+            types = result.get("scam_types", []) or []
+            explain = result.get("explanation", "")
+
+            types_str = "、".join(types) if types else "（目前未歸類）"
+            reply = (
+                f"🛡️ ScamShield 分析結果\n"
+                f"風險等級：{level}\n"
+                f"風險分數：{score}\n"
+                f"類型：{types_str}\n\n"
+                f"{explain}"
+            )
+        except Exception as e:
+            reply = f"靠杯我剛剛分析爆掉了：{e}"
+
+        _line_reply(reply_token, reply)
+
     return {"ok": True}
 
 
