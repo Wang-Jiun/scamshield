@@ -620,8 +620,7 @@ async def reset_stats(_=Depends(require_admin)):
 
 @app.get("/stats-ui", response_class=HTMLResponse)
 async def stats_ui(req: Request):
-    # 這裡不直接 require_admin（不然你連頁面都進不去），改成：頁面載入後用 header 去拉 /stats
-    # 但也不能完全裸奔，所以用 query k 做一次 gate
+    # 用 query k 做一次 gate（避免裸奔）
     admin_key = os.getenv("ADMIN_KEY", "").strip()
     k = (req.query_params.get("k") or "").strip()
     if not admin_key or not k or not secrets.compare_digest(k, admin_key):
@@ -630,8 +629,8 @@ async def stats_ui(req: Request):
             content="<pre>Unauthorized. 你沒帶 ADMIN_KEY </pre>",
         )
 
-    # UI 會把 key 存在 sessionStorage，只用來拉 /stats
-    return f"""
+    # ✅ 重點：不要用 f-string，避免 JS template literal 的 ${...} 讓 Python 爆炸
+    return """
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -639,18 +638,18 @@ async def stats_ui(req: Request):
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>ScamShield 匿名統計</title>
   <style>
-    body{{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:#0b0f14;color:#e6edf3;margin:0}}
-    .wrap{{max-width:1100px;margin:0 auto;padding:24px}}
-    .row{{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch}}
-    .card{{flex:1;background:#101826;border:1px solid #1f2a3a;border-radius:16px;padding:18px;margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}}
-    .big{{font-size:44px;font-weight:1000}}
-    .muted{{opacity:.8}}
-    a{{color:#00ff88}}
-    button{{border:0;border-radius:12px;padding:10px 14px;background:#1f2a3a;color:#e6edf3;font-weight:900;cursor:pointer}}
-    .danger{{background:#ff3b30;color:#fff}}
-    table{{width:100%;border-collapse:collapse;margin-top:10px}}
-    th,td{{border-bottom:1px solid #1f2a3a;padding:10px;text-align:left;vertical-align:top}}
-    .pill{{display:inline-block;padding:4px 10px;border-radius:999px;border:1px solid #2a3a52;background:#0b1220}}
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:#0b0f14;color:#e6edf3;margin:0}
+    .wrap{max-width:1100px;margin:0 auto;padding:24px}
+    .row{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch}
+    .card{flex:1;background:#101826;border:1px solid #1f2a3a;border-radius:16px;padding:18px;margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .big{font-size:44px;font-weight:1000}
+    .muted{opacity:.8}
+    a{color:#00ff88}
+    button{border:0;border-radius:12px;padding:10px 14px;background:#1f2a3a;color:#e6edf3;font-weight:900;cursor:pointer}
+    .danger{background:#ff3b30;color:#fff}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th,td{border-bottom:1px solid #1f2a3a;padding:10px;text-align:left;vertical-align:top}
+    .pill{display:inline-block;padding:4px 10px;border-radius:999px;border:1px solid #2a3a52;background:#0b1220}
   </style>
 </head>
 <body>
@@ -711,11 +710,11 @@ function fmtEpoch(e){
 
 async function fetchStats(){
   const k = sessionStorage.getItem("scamshield_admin_key");
-  const res = await fetch("/stats", {{
-    headers: {{
+  const res = await fetch("/stats", {
+    headers: {
       "X-Admin-Key": k
-    }}
-  }});
+    }
+  });
   const data = await res.json();
   if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
   return data;
@@ -728,11 +727,11 @@ async function reload(){
     document.getElementById("total").textContent = data.total;
     document.getElementById("since").textContent = "統計起算：" + fmtEpoch(data.since_epoch);
 
-    const by = data.by_level || {{}};
+    const by = data.by_level || {};
     const lv = ["critical","high","medium","low"].map(k => `${pill(k)} ${by[k]||0}`).join(" ");
     document.getElementById("levels").innerHTML = lv;
 
-    const bt = data.by_type || {{}};
+    const bt = data.by_type || {};
     const sorted = Object.entries(bt).sort((a,b)=>b[1]-a[1]).slice(0,8);
     document.getElementById("types").innerHTML =
       sorted.length ? sorted.map(([k,v])=>`${pill(k)} ${v}`).join("<br/>") : "<span class='muted'>（還沒有資料）</span>";
@@ -743,31 +742,31 @@ async function reload(){
       <tr>
         <td>${r.ts_utc || "-"}</td>
         <td>${pill(r.risk_level || "-")}</td>
-        <td>${r.risk_score ?? "-"}</td>
+        <td>${(r.risk_score ?? "-")}</td>
         <td>${(r.scam_types || []).map(pill).join(" ") || "<span class='muted'>-</span>"}</td>
         <td><span class="pill">${r.anon_id || "-"}</span></td>
       </tr>
     `).join("");
 
   }catch(e){
-    document.body.innerHTML = `<pre>Stats UI 出事了：${e}\\n（你是不是 ADMIN_KEY 打錯了）</pre>`;
+    document.body.innerHTML = `<pre>Stats UI 出事了：${e}\n（你是不是 ADMIN_KEY 打錯了）</pre>`;
   }
 }
 
 async function resetStats(){
   if(!confirm("確定要清空統計")) return;
   const k = sessionStorage.getItem("scamshield_admin_key");
-  const res = await fetch("/admin/reset-stats", {{
+  const res = await fetch("/admin/reset-stats", {
     method: "POST",
-    headers: {{
+    headers: {
       "X-Admin-Key": k
-    }}
-  }});
-  const data = await res.json().catch(()=>({{}}));
-  if(!res.ok) {{
+    }
+  });
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) {
     alert(data.detail || ("HTTP " + res.status));
     return;
-  }}
+  }
   await reload();
 }
 
@@ -776,5 +775,3 @@ reload();
 </body>
 </html>
 """
-
-
