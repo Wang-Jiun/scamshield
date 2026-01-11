@@ -343,6 +343,18 @@ class AnalyzeResponse(BaseModel):
 def health():
     return {"ok": True}
 
+@app.post("/line/webhook")
+async def line_webhook(
+    req: Request,
+    x_line_signature: str = Header(None)
+):
+    body = await req.body()
+    print("LINE webhook received:", body.decode("utf-8"))
+
+    # 先不驗簽、不回訊息，只要讓 LINE 不爆炸
+    return {"ok": True}
+
+
 
 @app.get("/", response_class=HTMLResponse)
 def home():
