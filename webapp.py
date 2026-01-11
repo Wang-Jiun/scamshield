@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from scamshield import analyze_text
 
-app = FastAPI(title="ScamShield Web", version="1.5.0")
+app = FastAPI(title="ScamShield Web", version="1.6.0")
 
 MAX_TEXT_CHARS = 5000
 RATE_LIMIT_PER_MIN = 30
@@ -28,7 +28,6 @@ _usage_by_key: Dict[str, Dict[str, int]] = {}  # api_key -> {"YYYY-MM-DD": count
 POLICY_VERSION = "2026.01"
 MODEL_VERSION = "rules-v1"
 
-
 # =========================
 # 匿名統計（不存原文）
 # =========================
@@ -38,6 +37,10 @@ _STATS: Dict[str, Any] = {
     "by_level": {"low": 0, "medium": 0, "high": 0, "critical": 0},
     "by_type": {},  # scam_type -> count
     "last_50": [],  # 最近 50 次（只記匿名摘要）
+
+    # ✅ 趨勢：日/小時聚合（UTC）
+    "daily": {},   # day -> {total, score_sum, by_level, by_type}
+    "hourly": {},  # hour -> {total, score_sum, by_level}
 }
 
 
@@ -45,8 +48,29 @@ def _utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _utc_hour() -> str:
+    # e.g. "2026-01-11 05"
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H")
+
+
 def _now_iso_utc() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _prune_hourly(max_hours: int = 48) -> None:
+    keys = sorted(_STATS["hourly"].keys())
+    if len(keys) <= max_hours:
+        return
+    for k in keys[:-max_hours]:
+        _STATS["hourly"].pop(k, None)
+
+
+def _prune_daily(max_days: int = 90) -> None:
+    keys = sorted(_STATS["daily"].keys())
+    if len(keys) <= max_days:
+        return
+    for k in keys[:-max_days]:
+        _STATS["daily"].pop(k, None)
 
 
 def _client_ip(req: Request) -> str:
@@ -148,15 +172,52 @@ def _stats_add(summary: Dict[str, Any]) -> None:
     _STATS["total"] += 1
 
     lvl = str(summary.get("risk_level", "")).lower()
+    score = int(summary.get("risk_score", 0) or 0)
+    types = summary.get("scam_types", []) or []
+
+    # overall by_level
     if lvl in _STATS["by_level"]:
         _STATS["by_level"][lvl] += 1
 
-    for t in summary.get("scam_types", []) or []:
+    # overall by_type
+    for t in types:
         t = str(t)
         _STATS["by_type"][t] = int(_STATS["by_type"].get(t, 0)) + 1
 
+    # last_50
     _STATS["last_50"].insert(0, summary)
     _STATS["last_50"] = _STATS["last_50"][:50]
+
+    # daily
+    day = _utc_day()
+    d = _STATS["daily"].setdefault(day, {
+        "total": 0,
+        "score_sum": 0,
+        "by_level": {"low": 0, "medium": 0, "high": 0, "critical": 0},
+        "by_type": {},
+    })
+    d["total"] += 1
+    d["score_sum"] += score
+    if lvl in d["by_level"]:
+        d["by_level"][lvl] += 1
+    for t in types:
+        t = str(t)
+        d["by_type"][t] = int(d["by_type"].get(t, 0)) + 1
+
+    # hourly
+    hour = _utc_hour()
+    h = _STATS["hourly"].setdefault(hour, {
+        "total": 0,
+        "score_sum": 0,
+        "by_level": {"low": 0, "medium": 0, "high": 0, "critical": 0},
+    })
+    h["total"] += 1
+    h["score_sum"] += score
+    if lvl in h["by_level"]:
+        h["by_level"][lvl] += 1
+
+    _prune_hourly(48)
+    _prune_daily(90)
 
 
 def _extract_suspicious_urls_from_result(result: Dict[str, Any]) -> List[str]:
@@ -250,8 +311,6 @@ async def require_admin(
 class AnalyzeRequest(BaseModel):
     text: str = Field(..., description="要分析的文字")
     context: Optional[Dict[str, Any]] = Field(default=None)
-
-    # ✅ Lv3+：可選匿名統計（不存原文）
     allow_anon_stats: Optional[bool] = Field(default=True, description="是否允許匿名統計（不存原文）")
 
 
@@ -270,12 +329,8 @@ class AnalyzeResponse(BaseModel):
     explanation: str
     recommended_actions: List[str]
     reply_templates: List[str]
-
-    # 商業化 meta
     policy_version: str
     model_version: str
-
-    # 可能存在（保底兼容）：可疑網址/實體
     suspicious_urls: Optional[List[str]] = None
     entities: Optional[Dict[str, Any]] = None
 
@@ -320,7 +375,6 @@ def home():
     .hr{height:1px;background:#1f2a3a;margin:12px 0}
     .checkbox{display:flex;gap:10px;align-items:center;user-select:none}
     .checkbox input{width:18px;height:18px}
-    .danger{border-color: rgba(255,59,48,.45)}
   </style>
 </head>
 <body>
@@ -399,7 +453,6 @@ let lastTemplates = "";
 function openStats(){
   const key = prompt("輸入 ADMIN_KEY 才能看後台");
   if(!key) return;
-  // 用 query 帶過去（只給 UI 讀一次），UI 會再用 header 拉資料
   window.open("/stats-ui?k=" + encodeURIComponent(key), "_blank");
 }
 
@@ -408,7 +461,7 @@ async function run(){
   const text = document.getElementById("text").value.trim();
   const allow_anon_stats = document.getElementById("allowStats").checked;
 
-  if(!text){ alert("先貼文字"); return; }
+  if(!text){ alert("先貼文字啦靠杯 🤣"); return; }
 
   btn.disabled = true; btn.textContent="分析中…";
   document.getElementById("copyhint").textContent = "";
@@ -434,7 +487,6 @@ async function run(){
     levelEl.textContent = data.risk_level;
     levelEl.className = "lvl " + data.risk_level;
 
-    // types
     const typesEl = document.getElementById("types");
     typesEl.innerHTML = "";
     (data.scam_types || []).forEach(t=>{
@@ -456,7 +508,6 @@ async function run(){
 
     document.getElementById("rules").textContent = JSON.stringify(data.triggered_rules || [], null, 2);
 
-    // suspicious urls
     const urls = (data.suspicious_urls || []);
     if(urls.length){
       document.getElementById("urlsCard").style.display = "block";
@@ -505,7 +556,6 @@ async def analyze_web(body: AnalyzeRequest, req: Request):
     try:
         result = analyze_text(text, context=body.context)
 
-        # 兼容：如果你的 analyze_text 沒吐 suspicious_urls，就自己從結果撿
         suspicious_urls = _extract_suspicious_urls_from_result(result)
         if suspicious_urls:
             result["suspicious_urls"] = suspicious_urls
@@ -517,7 +567,6 @@ async def analyze_web(body: AnalyzeRequest, req: Request):
             "model_version": MODEL_VERSION,
         }
 
-        # ✅ 匿名統計（不存原文）
         if bool(body.allow_anon_stats):
             anon_id = _stable_anon_id(text)
             summary = {
@@ -531,8 +580,8 @@ async def analyze_web(body: AnalyzeRequest, req: Request):
 
         return response
 
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(e).__name__}"})
+    except Exception:
+        return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
 
 # =========================
@@ -572,10 +621,7 @@ async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
     quotas = _parse_plan_quotas()
     used, remaining, quota = _check_and_inc_usage(auth["api_key"], auth["plan"], quotas)
     if used > quota:
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "API quota exceeded", "plan": auth["plan"], "day_utc": _utc_day()},
-        )
+        return JSONResponse(status_code=429, content={"detail": "API quota exceeded", "plan": auth["plan"], "day_utc": _utc_day()})
 
     try:
         result = analyze_text(text, context=body.context)
@@ -589,8 +635,8 @@ async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
             "policy_version": POLICY_VERSION,
             "model_version": MODEL_VERSION,
         }
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Internal error: {type(e).__name__}"})
+    except Exception:
+        return JSONResponse(status_code=500, content={"detail": "Internal error"})
 
 
 # =========================
@@ -599,12 +645,32 @@ async def api_analyze(body: AnalyzeRequest, auth=Depends(require_api_key)):
 
 @app.get("/stats")
 async def stats_json(_=Depends(require_admin)):
+    total = int(_STATS["total"])
+
+    score_sum_all = 0
+    for _, d in (_STATS.get("daily") or {}).items():
+        score_sum_all += int(d.get("score_sum", 0) or 0)
+    avg_score = (score_sum_all / total) if total > 0 else 0.0
+
+    bt = _STATS.get("by_type") or {}
+    top_types = sorted(bt.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    hourly_keys = sorted((_STATS.get("hourly") or {}).keys())[-24:]
+    hourly_24h = [{"hour": k, **_STATS["hourly"][k]} for k in hourly_keys]
+
+    daily_keys = sorted((_STATS.get("daily") or {}).keys())[-7:]
+    daily_7d = [{"day": k, **_STATS["daily"][k]} for k in daily_keys]
+
     return {
         "since_epoch": _STATS["since_epoch"],
-        "total": _STATS["total"],
+        "total": total,
+        "avg_score": avg_score,
         "by_level": _STATS["by_level"],
         "by_type": _STATS["by_type"],
+        "top_types": top_types,
         "last_50": _STATS["last_50"],
+        "hourly_24h": hourly_24h,
+        "daily_7d": daily_7d,
     }
 
 
@@ -615,21 +681,19 @@ async def reset_stats(_=Depends(require_admin)):
     _STATS["by_level"] = {"low": 0, "medium": 0, "high": 0, "critical": 0}
     _STATS["by_type"] = {}
     _STATS["last_50"] = []
+    _STATS["daily"] = {}
+    _STATS["hourly"] = {}
     return {"ok": True}
 
 
 @app.get("/stats-ui", response_class=HTMLResponse)
 async def stats_ui(req: Request):
-    # 用 query k 做一次 gate（避免裸奔）
     admin_key = os.getenv("ADMIN_KEY", "").strip()
     k = (req.query_params.get("k") or "").strip()
     if not admin_key or not k or not secrets.compare_digest(k, admin_key):
-        return HTMLResponse(
-            status_code=401,
-            content="<pre>Unauthorized. 你沒帶 ADMIN_KEY </pre>",
-        )
+        return HTMLResponse(status_code=401, content="<pre>Unauthorized. 你沒帶 ADMIN_KEY </pre>")
 
-    # ✅ 重點：不要用 f-string，避免 JS template literal 的 ${...} 讓 Python 爆炸
+    # ✅ 不用 f-string，避免 JS template literal 的 ${...} 讓 Python 爆炸
     return """
 <!doctype html>
 <html lang="zh-Hant">
@@ -638,58 +702,116 @@ async def stats_ui(req: Request):
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>ScamShield 匿名統計</title>
   <style>
-    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:#0b0f14;color:#e6edf3;margin:0}
-    .wrap{max-width:1100px;margin:0 auto;padding:24px}
-    .row{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch}
-    .card{flex:1;background:#101826;border:1px solid #1f2a3a;border-radius:16px;padding:18px;margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
-    .big{font-size:44px;font-weight:1000}
-    .muted{opacity:.8}
-    a{color:#00ff88}
-    button{border:0;border-radius:12px;padding:10px 14px;background:#1f2a3a;color:#e6edf3;font-weight:900;cursor:pointer}
-    .danger{background:#ff3b30;color:#fff}
+    :root{
+      --bg:#0b0f14; --card:#101826; --line:#1f2a3a; --soft:#0b1220;
+      --txt:#e6edf3; --muted:rgba(230,237,243,.75); --acc:#00ff88;
+      --danger:#ff3b30; --r:16px;
+    }
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:var(--bg);color:var(--txt);margin:0}
+    .wrap{max-width:1180px;margin:0 auto;padding:24px}
+    .topbar{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+    h1{margin:0}
+    .muted{color:var(--muted);font-size:13px}
+    .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:16px}
+    @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .big{font-size:44px;font-weight:1000;line-height:1}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-flex;gap:8px;align-items:center;padding:6px 10px;border-radius:999px;border:1px solid #2a3a52;background:var(--soft);font-size:13px}
+    .btn{border:0;border-radius:12px;padding:10px 14px;background:#1f2a3a;color:var(--txt);font-weight:900;cursor:pointer}
+    .btn:hover{filter:brightness(1.1)}
+    .danger{background:var(--danger);color:#fff}
+    .hr{height:1px;background:var(--line);margin:12px 0}
     table{width:100%;border-collapse:collapse;margin-top:10px}
-    th,td{border-bottom:1px solid #1f2a3a;padding:10px;text-align:left;vertical-align:top}
-    .pill{display:inline-block;padding:4px 10px;border-radius:999px;border:1px solid #2a3a52;background:#0b1220}
+    th,td{border-bottom:1px solid var(--line);padding:10px;text-align:left;vertical-align:top}
+    th{color:var(--muted);font-weight:700}
+    .bar{height:10px;border-radius:999px;background:#0f1726;border:1px solid #20304a;overflow:hidden}
+    .bar > i{display:block;height:100%;background:var(--acc)}
+    .tiny{font-size:12px;color:var(--muted)}
+    .kpi{display:flex;justify-content:space-between;align-items:flex-end;gap:10px}
+    .kpi .label{color:var(--muted);font-size:13px}
+    .two{display:grid;grid-template-columns:1.2fr .8fr;gap:14px;margin-top:14px}
+    @media (max-width: 980px){ .two{grid-template-columns:1fr} }
+    input,select{background:var(--soft);border:1px solid #2a3a52;border-radius:12px;color:var(--txt);padding:10px 12px;outline:none}
   </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>📊 ScamShield 匿名統計</h1>
-  <div class="muted">不包含任何原文內容（只記次數、等級、類型、匿名指紋）。</div>
-
-  <div class="row">
-    <div class="card">
-      <div class="muted">總分析次數</div>
-      <div class="big" id="total">-</div>
-      <div class="muted" id="since">-</div>
+  <div class="topbar">
+    <div>
+      <h1>📊 ScamShield 匿名統計</h1>
+      <div class="muted">不包含任何原文內容（只記次數、等級、類型、匿名指紋）。</div>
     </div>
-    <div class="card">
-      <div class="muted">等級分佈</div>
-      <div id="levels">-</div>
-    </div>
-    <div class="card">
-      <div class="muted">Top 詐騙類型</div>
-      <div id="types">-</div>
+    <div class="row">
+      <button class="btn" onclick="reload()">刷新</button>
+      <button class="btn danger" onclick="resetStats()">重置統計</button>
+      <button class="btn" onclick="window.location='/docs'">Swagger /docs</button>
     </div>
   </div>
 
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <h2 style="margin:0">最近 50 次（匿名摘要）</h2>
-      <div>
-        <button onclick="reload()">刷新</button>
-        <button class="danger" onclick="resetStats()">重置統計</button>
-        <button onclick="window.location='/docs'">Swagger /docs</button>
+  <div class="grid">
+    <div class="card">
+      <div class="kpi">
+        <div>
+          <div class="label">總分析次數</div>
+          <div class="big" id="total">-</div>
+        </div>
+        <div class="tiny" id="since">-</div>
+      </div>
+      <div class="hr"></div>
+      <div class="row">
+        <span class="pill">平均風險分數：<b id="avg">-</b></span>
       </div>
     </div>
+
+    <div class="card">
+      <div class="label muted">等級分佈（占比）</div>
+      <div style="margin-top:10px" id="levels"></div>
+    </div>
+
+    <div class="card">
+      <div class="label muted">Top 詐騙類型</div>
+      <div style="margin-top:10px" id="types"></div>
+    </div>
+  </div>
+
+  <div class="two">
+    <div class="card">
+      <div class="label muted">近 24 小時趨勢（UTC 每小時）</div>
+      <div style="margin-top:10px" id="h24"></div>
+      <div class="tiny">* 這是每小時分析次數，不是股價圖，靠杯別緊張 😆</div>
+    </div>
+
+    <div class="card">
+      <div class="label muted">近 7 天趨勢（UTC 每日）</div>
+      <div style="margin-top:10px" id="d7"></div>
+      <div class="tiny">* UTC 會讓你覺得時間怪怪的，正常啦。</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <h2 style="margin:0">最近 50 次（匿名摘要）</h2>
+      <div class="row">
+        <select id="filterLevel" onchange="renderRows()">
+          <option value="">全部等級</option>
+          <option value="critical">critical</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <input id="filterText" placeholder="搜尋類型 / 指紋" oninput="renderRows()" />
+      </div>
+    </div>
+
     <table>
       <thead>
         <tr>
           <th style="width:220px">時間(UTC)</th>
-          <th style="width:90px">等級</th>
+          <th style="width:110px">等級</th>
           <th style="width:90px">分數</th>
           <th>類型</th>
-          <th style="width:140px">匿名指紋</th>
+          <th style="width:170px">匿名指紋</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -701,8 +823,9 @@ async def stats_ui(req: Request):
 const adminKey = new URLSearchParams(location.search).get("k");
 sessionStorage.setItem("scamshield_admin_key", adminKey);
 
-function pill(s){ return `<span class="pill">${s}</span>`; }
+let last50 = [];
 
+function pill(s){ return `<span class="pill">${s}</span>`; }
 function fmtEpoch(e){
   const d = new Date(e * 1000);
   return d.toISOString().replace(".000Z","Z");
@@ -710,63 +833,103 @@ function fmtEpoch(e){
 
 async function fetchStats(){
   const k = sessionStorage.getItem("scamshield_admin_key");
-  const res = await fetch("/stats", {
-    headers: {
-      "X-Admin-Key": k
-    }
-  });
-  const data = await res.json();
+  const res = await fetch("/stats", { headers: { "X-Admin-Key": k } });
+  const data = await res.json().catch(()=>({}));
   if(!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
   return data;
+}
+
+function barLine(label, value, max){
+  const pct = max ? Math.round((value/max)*100) : 0;
+  return `
+    <div style="display:grid;grid-template-columns:120px 1fr 70px;gap:10px;align-items:center;margin:8px 0">
+      <div class="tiny">${label}</div>
+      <div class="bar"><i style="width:${pct}%;"></i></div>
+      <div class="tiny" style="text-align:right">${value}</div>
+    </div>
+  `;
+}
+
+function levelRow(name, count, total){
+  const pct = total ? Math.round((count/total)*100) : 0;
+  return `
+    <div style="display:grid;grid-template-columns:100px 1fr 90px;gap:10px;align-items:center;margin:8px 0">
+      <div>${pill(name)}</div>
+      <div class="bar"><i style="width:${pct}%;"></i></div>
+      <div class="tiny" style="text-align:right">${count} (${pct}%)</div>
+    </div>
+  `;
+}
+
+function renderRows(){
+  const lv = document.getElementById("filterLevel").value.trim().toLowerCase();
+  const q = document.getElementById("filterText").value.trim().toLowerCase();
+
+  const rows = (last50 || []).filter(r => {
+    if(lv && (String(r.risk_level||"").toLowerCase() !== lv)) return false;
+    if(!q) return true;
+    const types = (r.scam_types||[]).join(" ").toLowerCase();
+    const id = String(r.anon_id||"").toLowerCase();
+    return types.includes(q) || id.includes(q);
+  });
+
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.ts_utc || "-"}</td>
+      <td>${pill(r.risk_level || "-")}</td>
+      <td>${r.risk_score ?? "-"}</td>
+      <td>${(r.scam_types || []).map(pill).join(" ") || "<span class='muted'>-</span>"}</td>
+      <td><span class="pill">${r.anon_id || "-"}</span></td>
+    </tr>
+  `).join("") || `<tr><td colspan="5" class="muted">（沒有符合條件的紀錄）</td></tr>`;
 }
 
 async function reload(){
   try{
     const data = await fetchStats();
+    const total = Number(data.total || 0);
 
-    document.getElementById("total").textContent = data.total;
-    document.getElementById("since").textContent = "統計起算：" + fmtEpoch(data.since_epoch);
+    document.getElementById("total").textContent = total;
+    document.getElementById("since").textContent = "統計起算：" + fmtEpoch(data.since_epoch || 0);
+    document.getElementById("avg").textContent = (Number(data.avg_score || 0)).toFixed(2);
 
     const by = data.by_level || {};
-    const lv = ["critical","high","medium","low"].map(k => `${pill(k)} ${by[k]||0}`).join(" ");
-    document.getElementById("levels").innerHTML = lv;
+    const order = ["critical","high","medium","low"];
+    document.getElementById("levels").innerHTML = order
+      .map(k => levelRow(k, Number(by[k]||0), total))
+      .join("") || "<span class='muted'>（還沒有資料）</span>";
 
-    const bt = data.by_type || {};
-    const sorted = Object.entries(bt).sort((a,b)=>b[1]-a[1]).slice(0,8);
-    document.getElementById("types").innerHTML =
-      sorted.length ? sorted.map(([k,v])=>`${pill(k)} ${v}`).join("<br/>") : "<span class='muted'>（還沒有資料）</span>";
+    const top = data.top_types || [];
+    document.getElementById("types").innerHTML = top.length
+      ? top.map(([k,v]) => `${pill(k)} <span class="tiny">${v}</span>`).join("<br/>")
+      : "<span class='muted'>（還沒有資料）</span>";
 
-    const rows = (data.last_50 || []);
-    const tbody = document.getElementById("rows");
-    tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td>${r.ts_utc || "-"}</td>
-        <td>${pill(r.risk_level || "-")}</td>
-        <td>${(r.risk_score ?? "-")}</td>
-        <td>${(r.scam_types || []).map(pill).join(" ") || "<span class='muted'>-</span>"}</td>
-        <td><span class="pill">${r.anon_id || "-"}</span></td>
-      </tr>
-    `).join("");
+    const h24 = data.hourly_24h || [];
+    const maxH = Math.max(1, ...h24.map(x => Number(x.total||0)));
+    document.getElementById("h24").innerHTML = h24.length
+      ? h24.map(x => barLine(x.hour, Number(x.total||0), maxH)).join("")
+      : "<span class='muted'>（還沒有資料）</span>";
 
+    const d7 = data.daily_7d || [];
+    const maxD = Math.max(1, ...d7.map(x => Number(x.total||0)));
+    document.getElementById("d7").innerHTML = d7.length
+      ? d7.map(x => barLine(x.day, Number(x.total||0), maxD)).join("")
+      : "<span class='muted'>（還沒有資料）</span>";
+
+    last50 = data.last_50 || [];
+    renderRows();
   }catch(e){
-    document.body.innerHTML = `<pre>Stats UI 出事了：${e}\n（你是不是 ADMIN_KEY 打錯了）</pre>`;
+    document.body.innerHTML = `<pre>Stats UI 出事了：${e}\n（你是不是 ADMIN_KEY 打錯了，或 /stats 掛了）</pre>`;
   }
 }
 
 async function resetStats(){
-  if(!confirm("確定要清空統計")) return;
+  if(!confirm("確定要清空統計？你按下去就真的歸零，別等下又靠杯我沒提醒你 🤣")) return;
   const k = sessionStorage.getItem("scamshield_admin_key");
-  const res = await fetch("/admin/reset-stats", {
-    method: "POST",
-    headers: {
-      "X-Admin-Key": k
-    }
-  });
+  const res = await fetch("/admin/reset-stats", { method: "POST", headers: { "X-Admin-Key": k } });
   const data = await res.json().catch(()=>({}));
-  if(!res.ok) {
-    alert(data.detail || ("HTTP " + res.status));
-    return;
-  }
+  if(!res.ok){ alert(data.detail || ("HTTP " + res.status)); return; }
   await reload();
 }
 
