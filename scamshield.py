@@ -158,91 +158,217 @@ def _p(s: str) -> re.Pattern:
 
 
 RULES: List[Rule] = [
-    # 威脅/緊迫
+    # =========================
+    # 威脅/緊迫（恐嚇你、催你）
+    # =========================
     Rule(
         name="急迫/恐嚇",
         score=18,
-        patterns=[_p(r"立即|馬上|立刻|限時|24小時|今天內|最後通牒|緊急|再不.*就|否則")],
+        patterns=[_p(r"立即|馬上|立刻|限時|24小時|今天內|最後通牒|緊急|再不.*就|否則|逾期")],
         scam_types=["急迫恐嚇"],
         stage_hint="威脅施壓",
     ),
     Rule(
-        name="凍結/停權/法律威脅",
-        score=28,
-        patterns=[_p(r"凍結|停權|封鎖|帳戶異常|司法|法院|傳票|刑事|報警|違規|罰款")],
-        scam_types=["假客服/帳戶凍結"],
+        name="法律/司法威脅（含洗錢）",
+        score=30,
+        patterns=[_p(r"洗錢|地檢署|檢察官|法院|傳票|刑事|偵查|羈押|拘提|扣押|凍結|停權|封鎖|帳戶異常|警示帳戶|報警|違規|罰款|通緝")],
+        scam_types=["假公家機關/司法恐嚇"],
         stage_hint="威脅施壓",
     ),
+    Rule(
+        name="假客服/帳戶安全（停用、盜刷）",
+        score=24,
+        patterns=[_p(r"客服|帳號異常|登入異常|異地登入|盜刷|可疑交易|風險交易|帳戶將被停用|為了您的安全|安全驗證")],
+        scam_types=["假客服/帳戶凍結"],
+        stage_hint="資訊投放",
+    ),
 
-    # 要求資料/驗證
+    # =========================
+    # 要求資料/驗證（要你交出關鍵東西）
+    # =========================
     Rule(
         name="索取個資/驗證碼/OTP",
-        score=30,
-        patterns=[_p(r"驗證碼|OTP|一次性密碼|簡訊碼|提供.*密碼|提供.*驗證|登入驗證|二步驗證")],
+        score=34,
+        patterns=[_p(r"驗證碼|OTP|一次性密碼|簡訊碼|提供.*密碼|提供.*驗證|登入驗證|二步驗證|2FA|Google驗證")],
         scam_types=["索取個資/驗證碼"],
         stage_hint="要求資料/驗證",
     ),
     Rule(
-        name="要求點擊連結/填資料",
-        score=22,
-        patterns=[_p(r"點擊連結|點此|填寫|補填|更新資料|確認資料|網址|連結")],
+        name="索取身分證/帳戶/銀行資料",
+        score=30,
+        patterns=[_p(r"身分證|證件|健保卡|駕照|帳戶影本|存摺|卡號|CVV|安全碼|銀行帳號|戶頭|金融卡|開戶")],
+        scam_types=["索取個資/金融資料"],
+        stage_hint="要求資料/驗證",
+    ),
+    Rule(
+        name="要求點擊連結/填資料/表單",
+        score=24,
+        patterns=[_p(r"點擊連結|點此|填寫|補填|更新資料|確認資料|表單|網址|連結|登入查看|立即前往")],
+        scam_types=["釣魚連結"],
+        stage_hint="要求資料/驗證",
+    ),
+    Rule(
+        name="短網址/QR Code 釣魚",
+        score=26,
+        patterns=[_p(r"bit\.ly|tinyurl|reurl\.cc|s\.id|is\.gd|cutt\.ly|短網址|掃碼|QR\s?Code|QRCode")],
         scam_types=["釣魚連結"],
         stage_hint="要求資料/驗證",
     ),
 
-    # 金流/匯款
+    # =========================
+    # 金流/匯款（最詐的核心）
+    # =========================
     Rule(
         name="匯款/轉帳/購買點數",
-        score=35,
-        patterns=[_p(r"匯款|轉帳|ATM|點數|代購|超商代碼|充值|儲值|買遊戲點|購買禮物卡")],
+        score=38,
+        patterns=[_p(r"匯款|轉帳|ATM|無卡|超商代碼|繳費碼|代收|點數|充值|儲值|買遊戲點|購買禮物卡|Apple\s?Gift|Google\s?Play|Steam\s?卡")],
         scam_types=["要求匯款/點數"],
         stage_hint="要求匯款",
     ),
+    Rule(
+        name="出金卡關/解凍費/保證金/稅金",
+        score=40,
+        patterns=[_p(r"出金|提領|提款|解凍|保證金|押金|手續費|稅金|所得稅|保證金|驗證金|風控|流水|補款|補繳")],
+        scam_types=["投資詐騙","平台出金詐騙"],
+        stage_hint="要求匯款",
+    ),
 
-    # 投資
+    # =========================
+    # 投資/虛擬幣（殺豬盤、帶單、假平台）
+    # =========================
     Rule(
         name="投資高報酬/帶單/內線",
-        score=26,
-        patterns=[_p(r"高報酬|保證獲利|帶單|老師|群組|飆股|內線|翻倍|穩賺|不賠")],
+        score=28,
+        patterns=[_p(r"高報酬|保證獲利|帶單|老師|助理|群組|飆股|內線|翻倍|穩賺|不賠|限量名額|跟單")],
         scam_types=["投資詐騙"],
         stage_hint="資訊投放",
     ),
+    Rule(
+        name="虛擬幣/錢包地址/交易所話術",
+        score=30,
+        patterns=[_p(r"USDT|泰達幣|BTC|ETH|幣安|Binance|OKX|火幣|冷錢包|錢包地址|鏈上|合約|槓桿|空單|做多")],
+        scam_types=["虛擬貨幣詐騙"],
+        stage_hint="資訊投放",
+    ),
+    Rule(
+        name="假投資 App/假平台下載",
+        score=34,
+        patterns=[_p(r"下載App|投資APP|專屬平台|內部平台|非公開|安裝檔|apk|TestFlight|企業簽名|iOS描述檔|描述檔")],
+        scam_types=["投資詐騙","惡意安裝"],
+        stage_hint="要求資料/驗證",
+    ),
 
-    # 打工/刷單
+    # =========================
+    # 打工/刷單（最常見社會新鮮人受害）
+    # =========================
     Rule(
         name="打工刷單/日領",
-        score=28,
-        patterns=[_p(r"刷單|日領|免經驗|在家兼職|先垫付|先墊付|返款|佣金|傭金|提高評價")],
+        score=30,
+        patterns=[_p(r"刷單|日領|日結|免經驗|在家兼職|輕鬆賺|先垫付|先墊付|返款|返利|佣金|傭金|提高評價|做任務")],
         scam_types=["打工刷單"],
         stage_hint="資訊投放",
     ),
 
-    # 物流/包裹
+    # =========================
+    # 物流/電商（包裹、退款、訂單）
+    # =========================
     Rule(
         name="偽物流通知/包裹異常",
-        score=22,
-        patterns=[_p(r"包裹|物流|地址不完整|派送失敗|清關|補繳|關稅|運費|退回")],
+        score=24,
+        patterns=[_p(r"包裹|物流|地址不完整|派送失敗|清關|補繳|關稅|運費|退回|宅配|黑貓|新竹物流|順豐")],
         scam_types=["偽物流通知"],
         stage_hint="要求資料/驗證",
     ),
+    Rule(
+        name="電商訂單/退款/客服詐騙",
+        score=28,
+        patterns=[_p(r"訂單|退款|退費|重複扣款|取消訂單|簽收異常|客服專員|金流異常|請配合操作ATM")],
+        scam_types=["假電商/假客服"],
+        stage_hint="威脅施壓",
+    ),
 
-    # 轉移平台
+    # =========================
+    # 交友/感情（殺豬盤、裸聊勒索）
+    # =========================
+    Rule(
+        name="交友誘導投資（殺豬盤）",
+        score=32,
+        patterns=[_p(r"一起投資|帶你賺|我教你|穩賺|我們的未來|存一筆|結婚基金|理財")],
+        scam_types=["交友投資詐騙"],
+        stage_hint="資訊投放",
+    ),
+    Rule(
+        name="裸聊/私密照勒索",
+        score=45,
+        patterns=[_p(r"裸聊|視訊|私密照|散佈|傳給你朋友|曝光|威脅公開|不付錢就")],
+        scam_types=["勒索詐騙"],
+        stage_hint="威脅施壓",
+    ),
+
+    # =========================
+    # 冒名/社工（借錢、親友、主管）
+    # =========================
+    Rule(
+        name="借錢/急用/情緒勒索",
+        score=26,
+        patterns=[_p(r"先借我|借我|急用|周轉|拜託|很急|我現在.*需要|今天就還|馬上還|轉我.*(元|塊)?|幫我墊")],
+        scam_types=["冒名熟人/借錢"],
+        stage_hint="要求匯款",
+        note="常見冒名熟人或社工借錢話術",
+    ),
+    Rule(
+        name="冒名主管/公司急件匯款",
+        score=40,
+        patterns=[_p(r"我是你主管|老闆|財務|急件|先匯|先轉|不要跟別人說|保密|立刻處理")],
+        scam_types=["商業詐騙/CEO Fraud"],
+        stage_hint="威脅施壓",
+    ),
+
+    # =========================
+    # 轉移平台（避開官方客服）
+    # =========================
     Rule(
         name="引導轉移平台",
         score=18,
-        patterns=[_p(r"加LINE|加好友|私訊|移到|telegram|tg|whatsapp|WeChat|微信|t\.me/")],
+        patterns=[_p(r"加LINE|加好友|私訊|移到|telegram|tg|whatsapp|WeChat|微信|t\.me/|LINE\s?ID")],
         scam_types=["轉移平台"],
         stage_hint="轉移平台",
     ),
 
-    # 借錢社工（修你那張 0 分）
+    # =========================
+    # 遠端控制（超危險）
+    # =========================
     Rule(
-        name="借錢/急用/情緒勒索",
-        score=22,
-        patterns=[_p(r"先借我|借我|急用|周轉|拜託|很急|我現在.*需要|今天就還|馬上還|轉我.*(元|塊)?")],
-        scam_types=["冒名熟人/借錢"],
-        stage_hint="要求匯款",
-        note="常見冒名熟人或社工借錢話術",
+        name="要求安裝遠端控制/螢幕共享",
+        score=48,
+        patterns=[_p(r"AnyDesk|TeamViewer|遠端|螢幕共享|共享螢幕|協助操作|代操作|讓我幫你處理")],
+        scam_types=["遠端控制詐騙"],
+        stage_hint="要求資料/驗證",
+    ),
+
+    # =========================
+    # 台灣常見：ETC/罰單/學貸/聯徵
+    # =========================
+    Rule(
+        name="ETC/停車費/罰單通知釣魚",
+        score=26,
+        patterns=[_p(r"ETC|停車費|罰單|未繳|逾期|監理站|交通違規|繳費通知")],
+        scam_types=["假通知釣魚"],
+        stage_hint="要求資料/驗證",
+    ),
+    Rule(
+        name="學貸/助學金/補助詐騙",
+        score=24,
+        patterns=[_p(r"學貸|助學金|補助|學費|教育部|獎學金|補助金")],
+        scam_types=["假補助/學貸詐騙"],
+        stage_hint="資訊投放",
+    ),
+    Rule(
+        name="聯徵/信用分數/貸款核准話術",
+        score=24,
+        patterns=[_p(r"聯徵|信用分數|貸款|核准|額度|低利|快速放款|免審核|保證過件")],
+        scam_types=["貸款詐騙"],
+        stage_hint="資訊投放",
     ),
 ]
 
@@ -284,11 +410,11 @@ def _pick_stage(stage_scores: Dict[str, int]) -> str:
 
 
 def _risk_level(score: int) -> str:
-    if score >= 85:
+    if score >= 70:
         return "critical"
-    if score >= 65:
-        return "high"
     if score >= 40:
+        return "high"
+    if score >= 20:
         return "medium"
     return "low"
 
@@ -352,14 +478,62 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
         extra += 6
 
     # 最終分數
-    score = base_score + min(url_score_total, 40) + extra
+    # =========================
+    # 連動加成（Combo bonus）
+    # =========================
+    combo = 0
 
-    # 沒命中規則但有短網址/可疑網址，也要給基本提醒
-    if score == 0 and urls:
-        score = min(25, max(url_score_total, 15))
+    s_threat = stage_scores.get("威脅施壓", 0)
+    s_verify = stage_scores.get("要求資料/驗證", 0)
+    s_pay    = stage_scores.get("要求匯款", 0)
+
+    # 威脅 + 要資料 / 威脅 + 要匯款：通常是最典型的假客服/假公家機關
+    if s_threat > 0 and s_verify > 0:
+        combo += 12
+    if s_threat > 0 and s_pay > 0:
+        combo += 18
+
+    # 有釣魚連結 + 要資料：幾乎可以直接當高風險
+    if ("釣魚連結" in scam_types) and (s_verify > 0):
+        combo += 12
+
+    # 有「索取個資/驗證碼」這種命中，額外再加（你本來說要加權，但其實沒有做）
+    if any(t in scam_types for t in ["索取個資/驗證碼", "索取個資/金融資料"]):
+        combo += 10
+
+    # 使用者自己在問「是不是詐騙/被騙」：就算沒命中規則，也要給基本警示分
+    # （不然 LINE bot 回 low=0 超像在嘴人）
+    if score == 0:
+        if _p(r"是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎").search(text):
+            combo += 18
+            stage_scores["資訊投放"] = stage_scores.get("資訊投放", 0) + 8
+            if "疑似詐騙求證" not in scam_types:
+                scam_types.append("疑似詐騙求證")
+
+    # =========================
+    # 最終分數
+    # =========================
+    score = base_score + min(url_score_total, 40) + extra + combo
+
+
+    # =========================
+    # 保底風險（避免 0 分裝死）
+    # =========================
+    if base_score == 0 and url_score_total == 0:
+        # 使用者主動懷疑詐騙
+        if _p(r"是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎").search(text):
+            score = 20
+            stage_scores["資訊投放"] = stage_scores.get("資訊投放", 0) + 10
+            if "疑似詐騙求證" not in scam_types:
+                scam_types.append("疑似詐騙求證")
+
+    # 只有網址命中（但規則沒中）
+    elif base_score == 0 and urls:
+        score = min(30, max(url_score_total, 18))
         stage_scores["要求資料/驗證"] = stage_scores.get("要求資料/驗證", 0) + 10
         if "釣魚連結" not in scam_types:
             scam_types.append("釣魚連結")
+
 
     score = max(0, min(score, 100))
     level = _risk_level(score)
