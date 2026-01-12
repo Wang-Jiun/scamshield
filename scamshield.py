@@ -485,7 +485,6 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
         # 長數字可能是帳號/卡號，視為風險訊號，但別太重
         extra += 6
 
-    # 最終分數
     # =========================
     # 連動加成（Combo bonus）
     # =========================
@@ -495,86 +494,50 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
     s_verify = stage_scores.get("要求資料/驗證", 0)
     s_pay    = stage_scores.get("要求匯款", 0)
 
-    # 威脅 + 要資料 / 威脅 + 要匯款：通常是最典型的假客服/假公家機關
+    # 威脅 + 要資料 / 威脅 + 要匯款：典型假客服/假公家機關
     if s_threat > 0 and s_verify > 0:
         combo += 12
     if s_threat > 0 and s_pay > 0:
         combo += 18
 
-    # 有釣魚連結 + 要資料：幾乎可以直接當高風險
+    # 釣魚連結 + 要資料：高機率釣魚
     if ("釣魚連結" in scam_types) and (s_verify > 0):
         combo += 12
 
-    # 有「索取個資/驗證碼」這種命中，額外再加（你本來說要加權，但其實沒有做）
+    # 有索取個資/驗證碼類：額外加權（你之前說要加權，這邊才是真的做）
     if any(t in scam_types for t in ["索取個資/驗證碼", "索取個資/金融資料"]):
         combo += 10
 
-    # 使用者自己在問「是不是詐騙/被騙」：就算沒命中規則，也要給基本警示分
-    # （不然 LINE bot 回 low=0 超像在嘴人）
-    if score == 0:
-        if _p(r"是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎").search(text):
-            combo += 18
-            stage_scores["資訊投放"] = stage_scores.get("資訊投放", 0) + 8
-            if "疑似詐騙求證" not in scam_types:
-                scam_types.append("疑似詐騙求證")
 
     # =========================
-    # 分數初始化（防炸）
-    # =========================
-    score = 0  # 保證一定存在
-
-
-    # =========================
-    # URL risk
-    # =========================
-    suspicious_urls: List[Dict[str, Any]] = []
-    url_score_total = 0
-    for u in urls:
-        s, reason = analyze_url_risk(u)
-        if s > 0:
-            suspicious_urls.append({
-                "url": u,
-                "score": s,
-                "reason": reason
-            })
-        url_score_total += s
-
-
-    # =========================
-    # 額外風險（長數字等）
-    # =========================
-    extra = 0
-    if entities.get("long_numbers"):
-        extra += 6
-
-
-    # =========================
-    # 最終分數（主路徑）
+    # 最終分數（唯一入口）
+    # ✅ 先算一次，不要在 combo 區塊偷看 score（不然你又會炸）
     # =========================
     score = base_score + min(url_score_total, 40) + extra + combo
 
 
     # =========================
     # 保底風險（避免 0 分裝死）
+    # 注意：這邊用 max()，避免把你原本 combo 的分數覆蓋掉
     # =========================
     if base_score == 0 and url_score_total == 0:
-        # 使用者主動懷疑詐騙
-        if _p(r"(是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎)").search(text):
+        # 使用者主動懷疑詐騙：沒命中規則也給基本警示
+        if _p(r"是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎").search(text):
             score = max(score, 20)
             stage_scores["資訊投放"] = stage_scores.get("資訊投放", 0) + 10
             if "疑似詐騙求證" not in scam_types:
                 scam_types.append("疑似詐騙求證")
 
     elif base_score == 0 and urls:
-        # 只有網址命中（但規則沒中）
-        score = min(30, max(url_score_total, 18))
+        # 只有網址命中（規則沒中）也要有基本風險
+        score = max(score, min(30, max(url_score_total, 18)))
         stage_scores["要求資料/驗證"] = stage_scores.get("要求資料/驗證", 0) + 10
         if "釣魚連結" not in scam_types:
             scam_types.append("釣魚連結")
 
 
     # =========================
-    # Clamp + 階段判斷
+    # 收尾（一定要有）
     # =========================
     score = max(0, min(score, 100))
     level = _risk_level(score)
