@@ -370,6 +370,14 @@ RULES: List[Rule] = [
         scam_types=["貸款詐騙"],
         stage_hint="資訊投放",
     ),
+    Rule(
+        name="涉案/洗錢/配合調查",
+        score=30,
+        patterns=[_p(r"洗錢|涉案|配合調查|刑警|檢察官|金流異常|司法調查|凍結資金|監管帳戶")],
+        scam_types=["假檢警/洗錢恐嚇"],
+        stage_hint="威脅施壓",
+    ),
+
 ]
 
 
@@ -511,7 +519,37 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
                 scam_types.append("疑似詐騙求證")
 
     # =========================
-    # 最終分數
+    # 分數初始化（防炸）
+    # =========================
+    score = 0  # 保證一定存在
+
+
+    # =========================
+    # URL risk
+    # =========================
+    suspicious_urls: List[Dict[str, Any]] = []
+    url_score_total = 0
+    for u in urls:
+        s, reason = analyze_url_risk(u)
+        if s > 0:
+            suspicious_urls.append({
+                "url": u,
+                "score": s,
+                "reason": reason
+            })
+        url_score_total += s
+
+
+    # =========================
+    # 額外風險（長數字等）
+    # =========================
+    extra = 0
+    if entities.get("long_numbers"):
+        extra += 6
+
+
+    # =========================
+    # 最終分數（主路徑）
     # =========================
     score = base_score + min(url_score_total, 40) + extra + combo
 
@@ -521,20 +559,23 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
     # =========================
     if base_score == 0 and url_score_total == 0:
         # 使用者主動懷疑詐騙
-        if _p(r"是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎").search(text):
-            score = 20
+        if _p(r"(是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎)").search(text):
+            score = max(score, 20)
             stage_scores["資訊投放"] = stage_scores.get("資訊投放", 0) + 10
             if "疑似詐騙求證" not in scam_types:
                 scam_types.append("疑似詐騙求證")
 
-    # 只有網址命中（但規則沒中）
     elif base_score == 0 and urls:
+        # 只有網址命中（但規則沒中）
         score = min(30, max(url_score_total, 18))
         stage_scores["要求資料/驗證"] = stage_scores.get("要求資料/驗證", 0) + 10
         if "釣魚連結" not in scam_types:
             scam_types.append("釣魚連結")
 
 
+    # =========================
+    # Clamp + 階段判斷
+    # =========================
     score = max(0, min(score, 100))
     level = _risk_level(score)
     stage = _pick_stage(stage_scores)
