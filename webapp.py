@@ -1368,4 +1368,3 @@ document.body.innerHTML = document.body.innerHTML.replaceAll("{BASE}", base);
 </body>
 </html>
 """
-`
