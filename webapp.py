@@ -49,6 +49,72 @@ def _line_reply(reply_token: str, text: str) -> None:
             print("LINE reply failed:", r.status_code, r.text)
     except Exception as e:
         print("LINE reply exception:", e)
+def _lvl_badge(level: str) -> str:
+    lv = (level or "").lower()
+    if lv == "critical":
+        return "🔴 高度可疑"
+    if lv == "high":
+        return "🟠 高風險"
+    if lv == "medium":
+        return "🟡 中風險"
+    if lv == "low":
+        return "🟢 低風險"
+    return "⚪ 未知"
+
+
+def _shorten(s: str, n: int = 180) -> str:
+    s = (s or "").strip()
+    if len(s) <= n:
+        return s
+    return s[:n].rstrip() + "…"
+
+
+def format_line_reply(result: dict) -> str:
+    level = result.get("risk_level", "unknown")
+    score = int(result.get("risk_score", 0) or 0)
+    types = result.get("scam_types", []) or []
+    explain = (result.get("explanation", "") or "").strip()
+    actions = result.get("recommended_actions", []) or []
+    templates = result.get("reply_templates", []) or []
+    urls = result.get("suspicious_urls", []) or []
+
+    types_str = "、".join(types) if types else "（未明確歸類）"
+
+    url_lines = []
+    for u in urls[:3]:
+        if isinstance(u, dict):
+            url_lines.append(f"• {u.get('url','')}（+{u.get('score',0)}）")
+        else:
+            url_lines.append(f"• {str(u)}")
+
+    badge = _lvl_badge(level)
+
+    blocks = []
+    blocks.append("🛡️ ScamShield 防詐快篩")
+    blocks.append(f"{badge}｜分數：{score}/100")
+    blocks.append(f"類型：{types_str}")
+
+    if explain:
+        blocks.append("\n📌 我看到的可疑點")
+        blocks.append(_shorten(explain, 220))
+
+    if url_lines:
+        blocks.append("\n🔗 可疑連結（先別點，真的靠杯常中招）")
+        blocks.append("\n".join(url_lines))
+
+    if actions:
+        blocks.append("\n✅ 建議你現在做")
+        blocks.append("\n".join([f"{i+1}. {a}" for i, a in enumerate(actions[:4])]))
+
+    if templates:
+        blocks.append("\n✍️ 你可以直接回對方（複製貼上）")
+        for i, t in enumerate(templates[:3], start=1):
+            blocks.append(f"{i}) {t}")
+
+    blocks.append("\n—\n⚠️ 提醒：這是輔助判斷，重大金流/個資請用官方管道再確認。")
+
+    return "\n".join(blocks)[:4800]
+
 
 MAX_TEXT_CHARS = 5000
 RATE_LIMIT_PER_MIN = 30
@@ -384,6 +450,7 @@ async def line_webhook(req: Request, x_line_signature: str = Header(None)):
     for ev in events:
         if ev.get("type") != "message":
             continue
+
         msg = ev.get("message", {})
         if msg.get("type") != "text":
             continue
@@ -395,25 +462,15 @@ async def line_webhook(req: Request, x_line_signature: str = Header(None)):
 
         try:
             result = analyze_text(user_text, context=None)
-            level = result.get("risk_level", "unknown")
-            score = result.get("risk_score", 0)
-            types = result.get("scam_types", []) or []
-            explain = result.get("explanation", "")
-
-            types_str = "、".join(types) if types else "（目前未歸類）"
-            reply = (
-                f"🛡️ ScamShield 分析結果\n"
-                f"風險等級：{level}\n"
-                f"風險分數：{score}\n"
-                f"類型：{types_str}\n\n"
-                f"{explain}"
-            )
+            reply = format_line_reply(result)
+	    _line_reply(reply_token, reply)
         except Exception as e:
-            reply = f"靠杯我剛剛分析爆掉了：{e}"
+            reply = f"⚠️ 系統分析時出錯，請稍後再試\n（{e}）"
 
         _line_reply(reply_token, reply)
 
     return {"ok": True}
+
 
 
 
@@ -427,37 +484,106 @@ def home():
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>ScamShield 防詐分析</title>
   <style>
-    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:#0b0f14;color:#e6edf3;margin:0}
+    :root{
+      --bg:#0b0f14;
+      --card:#101826;
+      --card2:#0b1220;
+      --border:#1f2a3a;
+      --border2:#2a3a52;
+      --txt:#e6edf3;
+      --muted:rgba(230,237,243,.75);
+      --green:#2ecc71;
+      --yellow:#f1c40f;
+      --orange:#ff8a3d;
+      --red:#ff3b30;
+      --accent:#00ff88;
+    }
+    body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;background:var(--bg);color:var(--txt);margin:0}
     .wrap{max-width:1080px;margin:0 auto;padding:24px}
     .grid{display:grid;grid-template-columns:1.2fr .8fr;gap:16px}
     @media (max-width: 980px){ .grid{grid-template-columns:1fr} }
-    .card{background:#101826;border:1px solid #1f2a3a;border-radius:16px;padding:18px;margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
-    textarea{width:100%;min-height:180px;border-radius:12px;border:1px solid #2a3a52;background:#0b1220;color:#e6edf3;padding:12px;font-size:16px;resize:vertical;outline:none}
-    button{border:0;border-radius:12px;padding:12px 16px;background:#00ff88;color:#04210f;font-weight:900;cursor:pointer}
+
+    .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:18px;margin-top:16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .card.soft{background:linear-gradient(180deg, rgba(16,24,38,1), rgba(11,18,32,1))}
+    textarea{width:100%;min-height:180px;border-radius:14px;border:1px solid var(--border2);background:var(--card2);color:var(--txt);padding:12px;font-size:16px;resize:vertical;outline:none}
+    button{border:0;border-radius:12px;padding:12px 16px;background:var(--accent);color:#04210f;font-weight:900;cursor:pointer}
     button:disabled{opacity:.55;cursor:not-allowed}
     .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-    .pill{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:999px;border:1px solid #2a3a52;background:#0b1220}
-    pre{white-space:pre-wrap;word-break:break-word;background:#0b1220;border:1px solid #2a3a52;border-radius:12px;padding:12px;margin:0}
-    .lvl{font-weight:1000}
-    .low{color:#2ecc71}.medium{color:#f1c40f}.high{color:#e74c3c}.critical{color:#ff3b30}
-    a{color:#00ff88}
-    .small{opacity:.85;font-size:13px}
-    .tag{display:inline-block;margin:4px 6px 0 0;padding:6px 10px;border-radius:999px;background:#0b1220;border:1px solid #2a3a52}
-    .copy{background:#1f2a3a;color:#e6edf3;font-weight:800}
+    .pill{display:inline-flex;gap:8px;align-items:center;padding:8px 12px;border-radius:999px;border:1px solid var(--border2);background:var(--card2)}
+    a{color:var(--accent);text-decoration:none}
+    a:hover{text-decoration:underline}
+    .small{opacity:.88;font-size:13px}
     .muted{opacity:.75}
-    .hr{height:1px;background:#1f2a3a;margin:12px 0}
+    .hr{height:1px;background:var(--border);margin:14px 0}
+
     .checkbox{display:flex;gap:10px;align-items:center;user-select:none}
     .checkbox input{width:18px;height:18px}
+
+    /* Result header */
+    .resultHead{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+    .badge{
+      display:inline-flex;align-items:center;gap:10px;
+      padding:10px 14px;border-radius:999px;
+      border:1px solid var(--border2);background:var(--card2);
+      font-weight:1000
+    }
+    .badgeDot{width:10px;height:10px;border-radius:999px;background:#999}
+    .b-low .badgeDot{background:var(--green)}
+    .b-medium .badgeDot{background:var(--yellow)}
+    .b-high .badgeDot{background:var(--orange)}
+    .b-critical .badgeDot{background:var(--red)}
+
+    .scoreBox{flex:1;min-width:260px}
+    .scoreTop{display:flex;justify-content:space-between;align-items:baseline}
+    .scoreNum{font-size:28px;font-weight:1000}
+    .scoreMax{opacity:.7}
+    .bar{height:12px;border-radius:999px;background:#0a0f18;border:1px solid var(--border2);overflow:hidden}
+    .bar > div{height:100%;width:0%}
+    .bar.low > div{background:var(--green)}
+    .bar.medium > div{background:var(--yellow)}
+    .bar.high > div{background:var(--orange)}
+    .bar.critical > div{background:var(--red)}
+
+    /* Tags */
+    .tags{display:flex;flex-wrap:wrap;gap:8px}
+    .tag{display:inline-flex;gap:6px;align-items:center;padding:7px 10px;border-radius:999px;background:var(--card2);border:1px solid var(--border2)}
+    .tagIcon{opacity:.8}
+
+    /* Sections */
+    .sectionTitle{margin:0 0 8px 0;font-size:15px;opacity:.95}
+    .box{background:var(--card2);border:1px solid var(--border2);border-radius:14px;padding:12px}
+    pre{white-space:pre-wrap;word-break:break-word;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+
+    .twoCol{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media (max-width: 980px){ .twoCol{grid-template-columns:1fr} }
+
+    .ghostBtn{background:#1f2a3a;color:var(--txt);font-weight:900}
+    .copyhint{min-height:18px}
+
+    /* Sample buttons */
+    .samples{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+    .sampleBtn{
+      border:1px solid var(--border2);background:var(--card2);color:var(--txt);
+      padding:10px 12px;border-radius:12px;cursor:pointer;font-weight:900
+    }
+    .sampleBtn:hover{border-color:rgba(0,255,136,.45)}
   </style>
 </head>
 <body>
 <div class="wrap">
   <h1>🛡️ ScamShield 防詐文字分析</h1>
 
-  <div class="card">
+  <div class="card soft">
     <p>貼上你收到的訊息（簡訊/LINE/FB/Email 都可以），按下分析。<span class="small">（上線版不會幫你存內容，別緊張）</span></p>
 
     <textarea id="text" placeholder="例如：你的帳戶異常，請立即匯款並提供驗證碼，否則凍結..."></textarea>
+
+    <div class="samples">
+      <button class="sampleBtn" onclick="fillSample('kfreeze')">📵 假客服凍結帳戶</button>
+      <button class="sampleBtn" onclick="fillSample('invest')">📈 投資老師帶單</button>
+      <button class="sampleBtn" onclick="fillSample('ship')">📦 物流補繳關稅</button>
+      <button class="sampleBtn" onclick="fillSample('borrow')">💸 熟人借錢急用</button>
+    </div>
 
     <div class="row" style="margin-top:12px">
       <button id="btn" onclick="run()">分析</button>
@@ -478,41 +604,63 @@ def home():
 
   <div class="grid">
     <div class="card" id="out" style="display:none">
-      <h2>結果</h2>
-      <div class="row">
-        <div>風險分數：<span id="score" class="lvl"></span></div>
-        <div>風險等級：<span id="level" class="lvl"></span></div>
+      <h2 style="margin:0 0 10px 0">結果</h2>
+
+      <div class="resultHead">
+        <div id="badge" class="badge b-low">
+          <span class="badgeDot"></span>
+          <span id="badgeText">🟢 低風險</span>
+        </div>
+
+        <div class="scoreBox">
+          <div class="scoreTop">
+            <div>風險分數</div>
+            <div><span id="score" class="scoreNum">0</span><span class="scoreMax">/100</span></div>
+          </div>
+          <div id="bar" class="bar low" aria-label="score bar"><div></div></div>
+          <div class="small muted" style="margin-top:6px">風險等級：<span id="level" style="font-weight:1000"></span></div>
+        </div>
       </div>
 
       <div class="hr"></div>
 
-      <h3>詐騙類型</h3>
-      <div id="types"></div>
+      <div class="sectionTitle">詐騙類型</div>
+      <div id="types" class="tags"></div>
 
-      <h3>簡短說明</h3>
-      <pre id="explain"></pre>
+      <div class="hr"></div>
 
-      <h3>建議行動</h3>
-      <pre id="actions"></pre>
-
-      <h3>可直接複製回覆模板</h3>
-      <div class="row" style="margin:8px 0">
-        <button class="copy" onclick="copyTemplates()">一鍵複製模板</button>
-        <span class="small" id="copyhint"></span>
+      <div class="twoCol">
+        <div>
+          <div class="sectionTitle">📌 我看到的可疑點</div>
+          <div class="box"><pre id="explain"></pre></div>
+        </div>
+        <div>
+          <div class="sectionTitle">✅ 建議你現在做</div>
+          <div class="box"><pre id="actions"></pre></div>
+        </div>
       </div>
-      <pre id="templates"></pre>
 
-      <details style="margin-top:10px">
-        <summary>查看命中規則與證據句（進階）</summary>
-        <pre id="rules"></pre>
+      <div class="hr"></div>
+
+      <div class="sectionTitle">✍️ 你可以直接回對方（複製貼上）</div>
+      <div class="row" style="margin:8px 0">
+        <button class="ghostBtn" onclick="copyTemplates()">一鍵複製模板</button>
+        <span class="small copyhint" id="copyhint"></span>
+      </div>
+      <div class="box"><pre id="templates"></pre></div>
+
+      <details style="margin-top:12px">
+        <summary class="small">查看命中規則與證據句（進階）</summary>
+        <div class="hr"></div>
+        <div class="box"><pre id="rules"></pre></div>
       </details>
     </div>
 
     <div class="card" id="urlsCard" style="display:none">
-      <h2>可疑網址（請先不要點）</h2>
-      <div class="small muted">看到短網址 tinyurl/bit.ly 這種，先當它是詐騙，靠杯真的。</div>
+      <h2 style="margin:0 0 8px 0">🔗 可疑網址（先不要點）</h2>
+      <div class="small muted">看到 tinyurl/bit.ly 這種短網址，先當它是詐騙，靠杯真的。</div>
       <div class="hr"></div>
-      <pre id="urls"></pre>
+      <div class="box"><pre id="urls"></pre></div>
     </div>
   </div>
 
@@ -528,6 +676,40 @@ function openStats(){
   const key = prompt("輸入 ADMIN_KEY 才能看後台");
   if(!key) return;
   window.open("/stats-ui?k=" + encodeURIComponent(key), "_blank");
+}
+
+function fillSample(kind){
+  const samples = {
+    kfreeze: "【通知】你的帳戶異常，請於24小時內完成身份驗證，否則將凍結。點擊連結更新資料：https://bit.ly/xxx 並提供簡訊驗證碼。",
+    invest: "老師帶單保證獲利，今天最後名額！加入群組跟單，穩賺不賠，現在入金就翻倍。",
+    ship: "你有一筆包裹派送失敗/清關異常，請點擊連結補填地址並繳交關稅/運費，否則退回。",
+    borrow: "我現在真的很急，可以先借我一點周轉嗎？我今天就還你，拜託了。"
+  };
+  document.getElementById("text").value = samples[kind] || "";
+}
+
+function levelMeta(level){
+  const lv = (level || "").toLowerCase();
+  if(lv === "critical") return {txt:"🔴 高度可疑", cls:"critical"};
+  if(lv === "high")     return {txt:"🟠 高風險",   cls:"high"};
+  if(lv === "medium")   return {txt:"🟡 中風險",   cls:"medium"};
+  if(lv === "low")      return {txt:"🟢 低風險",   cls:"low"};
+  return {txt:"⚪ 未知", cls:"low"};
+}
+
+function renderUrls(urls){
+  // 支援 list[str] 或 list[dict{url,score,reason}]
+  if(!urls || !urls.length) return "";
+  return urls.map(u=>{
+    if(typeof u === "string") return "• " + u;
+    if(u && typeof u === "object"){
+      const url = u.url || "";
+      const sc  = (u.score ?? 0);
+      const rs  = u.reason ? ("｜" + u.reason) : "";
+      return `• ${url}（+${sc}）${rs}`;
+    }
+    return "• " + String(u);
+  }).join("\\n");
 }
 
 async function run(){
@@ -554,38 +736,60 @@ async function run(){
       return;
     }
 
+    // show out
     document.getElementById("out").style.display = "block";
-    document.getElementById("score").textContent = data.risk_score;
 
-    const levelEl = document.getElementById("level");
-    levelEl.textContent = data.risk_level;
-    levelEl.className = "lvl " + data.risk_level;
+    const score = Number(data.risk_score || 0);
+    const level = (data.risk_level || "unknown").toLowerCase();
 
+    // badge + bar
+    const meta = levelMeta(level);
+    document.getElementById("badgeText").textContent = meta.txt;
+    const badge = document.getElementById("badge");
+    badge.className = "badge b-" + meta.cls;
+
+    document.getElementById("score").textContent = score;
+    document.getElementById("level").textContent = level;
+
+    const bar = document.getElementById("bar");
+    bar.className = "bar " + meta.cls;
+    bar.firstElementChild.style.width = Math.max(0, Math.min(score, 100)) + "%";
+
+    // types
     const typesEl = document.getElementById("types");
     typesEl.innerHTML = "";
-    (data.scam_types || []).forEach(t=>{
+    const types = (data.scam_types || []);
+    if(types.length){
+      types.forEach(t=>{
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.innerHTML = `<span class="tagIcon">🏷️</span><span>${t}</span>`;
+        typesEl.appendChild(span);
+      });
+    }else{
       const span = document.createElement("span");
       span.className = "tag";
-      span.textContent = t;
+      span.innerHTML = `<span class="tagIcon">🫥</span><span>未明確歸類（先用官方管道確認）</span>`;
       typesEl.appendChild(span);
-    });
-    if((data.scam_types || []).length === 0){
-      typesEl.innerHTML = "<span class='small'>（目前沒有明顯類型，但仍建議你用官方管道確認）</span>";
     }
 
-    document.getElementById("explain").textContent = data.explanation || "";
-    document.getElementById("actions").textContent = (data.recommended_actions || []).map(x=>"• "+x).join("\\n");
+    // explain/actions/templates
+    document.getElementById("explain").textContent = (data.explanation || "（沒有額外說明）");
+    document.getElementById("actions").textContent =
+      (data.recommended_actions || []).slice(0,6).map((x,i)=>`${i+1}. ${x}`).join("\\n") || "（暫無）";
 
-    const tpl = (data.reply_templates || []).map((x,i)=>`${i+1}. ${x}`).join("\\n");
-    document.getElementById("templates").textContent = tpl;
+    const tpl = (data.reply_templates || []).slice(0,6).map((x,i)=>`${i+1}. ${x}`).join("\\n");
+    document.getElementById("templates").textContent = tpl || "（暫無）";
     lastTemplates = tpl;
 
+    // rules
     document.getElementById("rules").textContent = JSON.stringify(data.triggered_rules || [], null, 2);
 
+    // urls
     const urls = (data.suspicious_urls || []);
     if(urls.length){
       document.getElementById("urlsCard").style.display = "block";
-      document.getElementById("urls").textContent = urls.map(u=>"• " + u).join("\\n");
+      document.getElementById("urls").textContent = renderUrls(urls);
     }
 
     document.getElementById("out").scrollIntoView({behavior:"smooth", block:"start"});
@@ -600,9 +804,9 @@ async function copyTemplates(){
   if(!lastTemplates){ return; }
   try{
     await navigator.clipboard.writeText(lastTemplates);
-    document.getElementById("copyhint").textContent = "✅ 已複製，貼去回對方就好（別被騙啦）";
+    document.getElementById("copyhint").textContent = "✅ 已複製";
   }catch(e){
-    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製，你手動選取也行";
+    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製";
   }
 }
 </script>
@@ -1164,3 +1368,4 @@ document.body.innerHTML = document.body.innerHTML.replaceAll("{BASE}", base);
 </body>
 </html>
 """
+`
