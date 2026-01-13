@@ -462,14 +462,14 @@ async def line_webhook(req: Request, x_line_signature: str = Header(None)):
 
         try:
             result = analyze_text(user_text, context=None)
-            reply = format_line_reply(result)
-	    _line_reply(reply_token, reply)
+            reply = format_line_reply(result)  # ✅ Whoscall 版回覆
         except Exception as e:
-            reply = f"⚠️ 系統分析時出錯，請稍後再試\n（{e}）"
+            reply = f"靠杯我剛剛分析爆掉了：{e}"
 
         _line_reply(reply_token, reply)
 
     return {"ok": True}
+
 
 
 
