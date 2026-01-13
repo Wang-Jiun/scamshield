@@ -804,9 +804,9 @@ async function copyTemplates(){
   if(!lastTemplates){ return; }
   try{
     await navigator.clipboard.writeText(lastTemplates);
-    document.getElementById("copyhint").textContent = "✅ 已複製";
+    document.getElementById("copyhint").textContent = "✅ 已複製，貼去回對方就好（別被騙啦）";
   }catch(e){
-    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製";
+    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製，你手動選取也行";
   }
 }
 </script>
