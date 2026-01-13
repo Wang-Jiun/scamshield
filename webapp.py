@@ -419,6 +419,12 @@ class TriggeredRule(BaseModel):
     evidence_sentences: List[str]
 
 
+class SuspiciousUrl(BaseModel):
+    url: str
+    score: int = 0
+    reason: str = ""
+
+
 class AnalyzeResponse(BaseModel):
     request_id: str
     risk_score: int
@@ -430,8 +436,9 @@ class AnalyzeResponse(BaseModel):
     reply_templates: List[str]
     policy_version: str
     model_version: str
-    suspicious_urls: Optional[List[str]] = None
+    suspicious_urls: Optional[List[SuspiciousUrl]] = None
     entities: Optional[Dict[str, Any]] = None
+
 
 
 # =========================
@@ -697,25 +704,20 @@ function levelMeta(level){
   return {txt:"⚪ 未知", cls:"low"};
 }
 
-function renderUrls(urls) {
-  if (!urls || !urls.length) return "";
-
-  return urls.slice(0, 8).map(u => {
-    // 兼容舊版：string
-    if (typeof u === "string") return "• " + u;
-
-    // 新版：object/dict
-    if (u && typeof u === "object") {
+function renderUrls(urls){
+  // 支援 list[str] 或 list[dict{url,score,reason}]
+  if(!urls || !urls.length) return "";
+  return urls.map(u=>{
+    if(typeof u === "string") return "• " + u;
+    if(u && typeof u === "object"){
       const url = u.url || "";
-      const score = (u.score ?? 0);
-      const reason = u.reason ? `｜${u.reason}` : "";
-      return `• ${url}（+${score}）${reason}`;
+      const sc  = (u.score ?? 0);
+      const rs  = u.reason ? ("｜" + u.reason) : "";
+      return `• ${url}（+${sc}）${rs}`;
     }
-
     return "• " + String(u);
-  }).join("\n");
+  }).join("\\n");
 }
-
 
 async function run(){
   const btn = document.getElementById("btn");
@@ -1373,3 +1375,4 @@ document.body.innerHTML = document.body.innerHTML.replaceAll("{BASE}", base);
 </body>
 </html>
 """
+`
