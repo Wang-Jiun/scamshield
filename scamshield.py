@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import re
+import os
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 from urllib.parse import urlparse
+
 
 # =========================
 # Utilities
@@ -152,12 +156,67 @@ class Rule:
     stage_hint: str  # pipeline stage hint
     note: str = ""
 
+# =========================
+# Rules hot loading
+# =========================
+
+RULES_PATH = Path(__file__).parent / "rules.json"
+
+_rules_cache = {
+    "mtime": 0,
+    "rules": []
+}
+
+def load_rules_from_json() -> list:
+    """
+    從 rules.json 讀規則，支援熱更新（檔案變了才重讀）
+    """
+    global _rules_cache
+
+    if not RULES_PATH.exists():
+        print("[WARN] rules.json not found, fallback to empty rules")
+        return []
+
+    mtime = RULES_PATH.stat().st_mtime
+    if mtime == _rules_cache["mtime"]:
+        return _rules_cache["rules"]
+
+    try:
+        with open(RULES_PATH, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        rules = []
+        for r in raw.get("rules", []):
+            rules.append(
+                Rule(
+                    name=r["name"],
+                    score=int(r["score"]),
+                    patterns=[_p(p) for p in r.get("patterns", [])],
+                    scam_types=r.get("scam_types", []),
+                    stage_hint=r.get("stage_hint", ""),
+                    note=r.get("note", "")
+                )
+            )
+
+        _rules_cache = {
+            "mtime": mtime,
+            "rules": rules
+        }
+
+        print(f"[OK] Loaded {len(rules)} rules from rules.json")
+        return rules
+
+    except Exception as e:
+        print("[ERROR] Failed to load rules.json:", e)
+        return _rules_cache["rules"]
+
+
 
 def _p(s: str) -> re.Pattern:
     return re.compile(s, re.IGNORECASE)
 
 
-RULES: List[Rule] = [
+DEFAULT_RULES: List[Rule] = [
     # =========================
     # 威脅/緊迫（恐嚇你、催你）
     # =========================
@@ -380,6 +439,57 @@ RULES: List[Rule] = [
 
 ]
 
+# =========================
+# Rules hot-reload (rules.json)
+# =========================
+
+RULES_JSON_PATH = Path(os.getenv("RULES_JSON_PATH", "rules.json"))
+
+_RULES_CACHE: Optional[List[Rule]] = None
+_RULES_MTIME: Optional[float] = None
+
+
+def _load_rules_from_json(path: Path) -> List[Rule]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    items = raw.get("rules", raw)  # 允許 {"rules":[...]} 或直接 [...]
+
+    rules: List[Rule] = []
+    for it in items:
+        pats = [_p(p) for p in (it.get("patterns", []) or [])]
+
+        rules.append(
+            Rule(
+                name=it.get("name", "未命名規則"),
+                score=int(it.get("score", 10)),
+                patterns=pats,
+                scam_types=it.get("scam_types", []) or [],
+                stage_hint=it.get("stage_hint", "資訊投放"),
+                note=it.get("note", "") or "",
+            )
+        )
+    return rules
+
+
+def get_rules(force_reload: bool = False) -> List[Rule]:
+    """
+    自動熱更新：檢查 rules.json 是否更新（mtime）
+    - 沒有 rules.json：回 DEFAULT_RULES
+    - 有 rules.json：讀取並快取
+    """
+    global _RULES_CACHE, _RULES_MTIME
+
+    if not RULES_JSON_PATH.exists():
+        return DEFAULT_RULES
+
+    mtime = RULES_JSON_PATH.stat().st_mtime
+
+    if force_reload or (_RULES_CACHE is None) or (_RULES_MTIME is None) or (mtime != _RULES_MTIME):
+        _RULES_CACHE = _load_rules_from_json(RULES_JSON_PATH)
+        _RULES_MTIME = mtime
+
+    return _RULES_CACHE
+
+
 
 def _split_sentences(text: str) -> List[str]:
     # 粗切：中英標點
@@ -449,7 +559,8 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
 
     base_score = 0
 
-    for rule in RULES:
+    for rule in get_rules():
+
         hit = False
         for pat in rule.patterns:
             if pat.search(text):
