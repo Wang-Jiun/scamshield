@@ -24,15 +24,15 @@ URL_RE = re.compile(
 
 PHONE_RE = re.compile(r"""(?x)
     (?:
-      (?:\+?886[-\s]?)?0?9\d{2}[-\s]?\d{3}[-\s]?\d{3}   # 台灣手機
+      (?:\+?886[-\s]?)?0?9\d{2}[-\s]?\d{3}[-\s]?\d{3}   
       |
-      0\d{1,2}[-\s]?\d{6,8}                              # 市話
+      0\d{1,2}[-\s]?\d{6,8}                              
     )
 """)
 
 EMAIL_RE = re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b")
 
-# 很粗略：銀行帳號/卡號通常是長數字，避免誤抓一般數字
+
 LONG_NUMBER_RE = re.compile(r"\b\d{10,19}\b")
 
 SHORTENER_DOMAINS = {
@@ -57,7 +57,7 @@ def extract_urls(text: str) -> List[str]:
     urls = []
     for m in URL_RE.finditer(text or ""):
         urls.append(m.group(1).rstrip(".,;:!?)]}"))
-    # 去重保序
+    
     seen = set()
     out = []
     for u in urls:
@@ -114,7 +114,7 @@ def analyze_url_risk(url: str) -> Tuple[int, str]:
 
     if is_ip_host(host):
         score += 30
-        reasons.append("IP 直連網址（很可疑）")
+        reasons.append("IP 直連網址")
 
     # tld
     parts = host.split(".")
@@ -127,17 +127,17 @@ def analyze_url_risk(url: str) -> Tuple[int, str]:
     # 超多子網域
     if len(parts) >= 4:
         score += 8
-        reasons.append("子網域過多（常見於偽裝）")
+        reasons.append("子網域過多")
 
     # URL 太長
     if len(url) >= 80:
         score += 6
-        reasons.append("網址過長（常藏參數/跳轉）")
+        reasons.append("網址過長")
 
     # @ 符號常用來混淆
     if "@" in url:
         score += 10
-        reasons.append("網址含 @（常用混淆導向）")
+        reasons.append("網址含 @")
 
     reason = "、".join(reasons) if reasons else "目前未見明顯網址風險特徵"
     return (min(score, 50), reason)
@@ -218,7 +218,7 @@ def _p(s: str) -> re.Pattern:
 
 DEFAULT_RULES: List[Rule] = [
     # =========================
-    # 威脅/緊迫（恐嚇你、催你）
+    # 威脅/緊迫
     # =========================
     Rule(
         name="急迫/恐嚇",
@@ -243,7 +243,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 要求資料/驗證（要你交出關鍵東西）
+    # 要求資料/驗證
     # =========================
     Rule(
         name="索取個資/驗證碼/OTP",
@@ -275,7 +275,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 金流/匯款（最詐的核心）
+    # 金流/匯款
     # =========================
     Rule(
         name="匯款/轉帳/購買點數",
@@ -293,7 +293,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 投資/虛擬幣（殺豬盤、帶單、假平台）
+    # 投資/虛擬幣
     # =========================
     Rule(
         name="投資高報酬/帶單/內線",
@@ -318,7 +318,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 打工/刷單（最常見社會新鮮人受害）
+    # 打工/刷單
     # =========================
     Rule(
         name="打工刷單/日領",
@@ -329,7 +329,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 物流/電商（包裹、退款、訂單）
+    # 物流/電商
     # =========================
     Rule(
         name="偽物流通知/包裹異常",
@@ -347,7 +347,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 交友/感情（殺豬盤、裸聊勒索）
+    # 交友/感情
     # =========================
     Rule(
         name="交友誘導投資（殺豬盤）",
@@ -365,7 +365,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 冒名/社工（借錢、親友、主管）
+    # 冒名/社工
     # =========================
     Rule(
         name="借錢/急用/情緒勒索",
@@ -384,7 +384,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 轉移平台（避開官方客服）
+    # 轉移平台
     # =========================
     Rule(
         name="引導轉移平台",
@@ -395,7 +395,7 @@ DEFAULT_RULES: List[Rule] = [
     ),
 
     # =========================
-    # 遠端控制（超危險）
+    # 遠端控制
     # =========================
     Rule(
         name="要求安裝遠端控制/螢幕共享",
@@ -451,7 +451,7 @@ _RULES_MTIME: Optional[float] = None
 
 def _load_rules_from_json(path: Path) -> List[Rule]:
     raw = json.loads(path.read_text(encoding="utf-8"))
-    items = raw.get("rules", raw)  # 允許 {"rules":[...]} 或直接 [...]
+    items = raw.get("rules", raw) 
 
     rules: List[Rule] = []
     for it in items:
@@ -590,10 +590,10 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
             suspicious_urls.append({"url": u, "score": s, "reason": reason})
         url_score_total += s
 
-    # 資料/驗證碼特別加權（避免被低估）
+    
     extra = 0
     if entities.get("long_numbers"):
-        # 長數字可能是帳號/卡號，視為風險訊號，但別太重
+      
         extra += 6
 
     # =========================
@@ -605,7 +605,7 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
     s_verify = stage_scores.get("要求資料/驗證", 0)
     s_pay    = stage_scores.get("要求匯款", 0)
 
-    # 威脅 + 要資料 / 威脅 + 要匯款：典型假客服/假公家機關
+   
     if s_threat > 0 and s_verify > 0:
         combo += 12
     if s_threat > 0 and s_pay > 0:
@@ -622,17 +622,16 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
 
     # =========================
     # 最終分數（唯一入口）
-    # ✅ 先算一次，不要在 combo 區塊偷看 score（不然你又會炸）
+   
     # =========================
     score = base_score + min(url_score_total, 40) + extra + combo
 
 
     # =========================
-    # 保底風險（避免 0 分裝死）
-    # 注意：這邊用 max()，避免把你原本 combo 的分數覆蓋掉
+ 
     # =========================
     if base_score == 0 and url_score_total == 0:
-        # 使用者主動懷疑詐騙：沒命中規則也給基本警示
+       
         if _p(r"是不是.*詐騙|被詐騙|被騙|詐騙嗎|真的假的|這是真的嗎|可靠嗎").search(text):
             score = max(score, 20)
             stage_scores["資訊投放"] = stage_scores.get("資訊投放", 0) + 10
@@ -640,7 +639,7 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
                 scam_types.append("疑似詐騙求證")
 
     elif base_score == 0 and urls:
-        # 只有網址命中（規則沒中）也要有基本風險
+      
         score = max(score, min(30, max(url_score_total, 18)))
         stage_scores["要求資料/驗證"] = stage_scores.get("要求資料/驗證", 0) + 10
         if "釣魚連結" not in scam_types:
@@ -648,7 +647,7 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
 
 
     # =========================
-    # 收尾（一定要有）
+    # 收尾
     # =========================
     score = max(0, min(score, 100))
     level = _risk_level(score)
@@ -658,7 +657,7 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
     highlights = []
     if triggered_rules:
         highlights.append(f"判斷流程階段：{stage}")
-        highlights.append("我看到的重點：")
+        highlights.append("看到的重點：")
         for r in triggered_rules[:5]:
             highlights.append(f"• 命中：{r['name']}（+{r['score']}）")
     else:
@@ -666,7 +665,7 @@ def analyze_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
         highlights.append("• 目前沒有明顯高風險特徵，但仍建議用官方管道確認。")
 
     if suspicious_urls:
-        highlights.append("• 文字內含可疑網址/短網址（很常是釣魚入口）")
+        highlights.append("• 文字內含可疑網址/短網址）")
 
     explanation = "\n".join(highlights)
 

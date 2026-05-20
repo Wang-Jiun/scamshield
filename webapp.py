@@ -100,15 +100,15 @@ def format_line_reply(result: dict) -> str:
         blocks.append(_shorten(explain, 220))
 
     if url_lines:
-        blocks.append("\n🔗 可疑連結（先別點，真的靠杯常中招）")
+        blocks.append("\n🔗 可疑連結")
         blocks.append("\n".join(url_lines))
 
     if actions:
-        blocks.append("\n✅ 建議你現在做")
+        blocks.append("\n✅ 建議作法")
         blocks.append("\n".join([f"{i+1}. {a}" for i, a in enumerate(actions[:4])]))
 
     if templates:
-        blocks.append("\n✍️ 你可以直接回對方（複製貼上）")
+        blocks.append("\n✍️ 可以直接回覆")
         for i, t in enumerate(templates[:3], start=1):
             blocks.append(f"{i}) {t}")
 
@@ -470,9 +470,9 @@ async def line_webhook(req: Request, x_line_signature: str = Header(None)):
 
         try:
             result = analyze_text(user_text, context=None)
-            reply = format_line_reply(result)  # ✅ Whoscall 版回覆
+            reply = format_line_reply(result)  
         except Exception as e:
-            reply = f"靠杯我剛剛分析爆掉了：{e}"
+            reply = f"剛剛分析失常：{e}"
 
         _line_reply(reply_token, reply)
 
@@ -582,7 +582,7 @@ def home():
   <h1>🛡️ ScamShield 防詐文字分析</h1>
 
   <div class="card soft">
-    <p>貼上你收到的訊息（簡訊/LINE/FB/Email 都可以），按下分析。<span class="small">（上線版不會幫你存內容，別緊張）</span></p>
+    <p>貼上你收到的訊息，按下分析。<span class="small">（上線版不會存取內容）</span></p>
 
     <textarea id="text" placeholder="例如：你的帳戶異常，請立即匯款並提供驗證碼，否則凍結..."></textarea>
 
@@ -650,7 +650,7 @@ def home():
 
       <div class="hr"></div>
 
-      <div class="sectionTitle">✍️ 你可以直接回對方（複製貼上）</div>
+      <div class="sectionTitle">✍️ 可以回覆對方</div>
       <div class="row" style="margin:8px 0">
         <button class="ghostBtn" onclick="copyTemplates()">一鍵複製模板</button>
         <span class="small copyhint" id="copyhint"></span>
@@ -665,7 +665,7 @@ def home():
     </div>
 
     <div class="card" id="urlsCard" style="display:none">
-      <h2 style="margin:0 0 8px 0">🔗 可疑網址（先不要點）</h2>
+      <h2 style="margin:0 0 8px 0">🔗 可疑網址</h2>
       <div class="small muted">看到 tinyurl/bit.ly 這種短網址，先當它是詐騙，靠杯真的。</div>
       <div class="hr"></div>
       <div class="box"><pre id="urls"></pre></div>
@@ -725,7 +725,7 @@ async function run(){
   const text = document.getElementById("text").value.trim();
   const allow_anon_stats = document.getElementById("allowStats").checked;
 
-  if(!text){ alert("先貼文字啦靠杯 🤣"); return; }
+  if(!text){ alert("請貼文字"); return; }
 
   btn.disabled = true; btn.textContent="分析中…";
   document.getElementById("copyhint").textContent = "";
@@ -740,7 +740,7 @@ async function run(){
 
     const data = await res.json().catch(()=> ({}));
     if(!res.ok){
-      alert(data.detail || ("出事了，HTTP " + res.status));
+      alert(data.detail || ("出事，HTTP " + res.status));
       return;
     }
 
@@ -812,9 +812,9 @@ async function copyTemplates(){
   if(!lastTemplates){ return; }
   try{
     await navigator.clipboard.writeText(lastTemplates);
-    document.getElementById("copyhint").textContent = "✅ 已複製，貼去回對方就好（別被騙啦）";
+    document.getElementById("copyhint").textContent = "✅ 已複製，貼去回對方就好";
   }catch(e){
-    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製，你手動選取也行";
+    document.getElementById("copyhint").textContent = "⚠️ 無法自動複製";
   }
 }
 </script>
@@ -831,7 +831,7 @@ async function copyTemplates(){
 async def analyze_web(body: AnalyzeRequest, req: Request):
     ip = _client_ip(req)
     if not _rate_limit_ok_ip(ip):
-        return JSONResponse(status_code=429, content={"detail": "太多次啦靠杯（rate limit）— 請稍後再試"})
+        return JSONResponse(status_code=429, content={"detail": "太多次（rate limit）— 請稍後再試"})
 
     text = (body.text or "").strip()
     if not text:
@@ -1067,13 +1067,13 @@ async def stats_ui(req: Request):
     <div class="card">
       <div class="label muted">近 24 小時趨勢（UTC 每小時）</div>
       <div style="margin-top:10px" id="h24"></div>
-      <div class="tiny">* 這是每小時分析次數，不是股價圖，靠杯別緊張 😆</div>
+      <div class="tiny">* 這是每小時分析次數</div>
     </div>
 
     <div class="card">
       <div class="label muted">近 7 天趨勢（UTC 每日）</div>
       <div style="margin-top:10px" id="d7"></div>
-      <div class="tiny">* UTC 會讓你覺得時間怪怪的，正常啦。</div>
+      <div class="tiny">* UTC 正常反應</div>
     </div>
   </div>
 
@@ -1213,7 +1213,7 @@ async function reload(){
 }
 
 async function resetStats(){
-  if(!confirm("確定要清空統計？你按下去就真的歸零，別等下又靠杯我沒提醒你 🤣")) return;
+  if(!confirm("確定要清空統計？")) return;
   const k = sessionStorage.getItem("scamshield_admin_key");
   const res = await fetch("/admin/reset-stats", { method: "POST", headers: { "X-Admin-Key": k } });
   const data = await res.json().catch(()=>({}));
@@ -1279,7 +1279,7 @@ async def api_docs():
     <p class="muted">A. <code>X-API-Key: &lt;key&gt;</code></p>
     <p class="muted">B. <code>Authorization: Bearer &lt;key&gt;</code></p>
     <div class="hr"></div>
-    <p class="warn">⚠️ 不要把 Key 寫死在前端！不然你會被自己氣死，靠杯。</p>
+    <p class="warn">⚠️ 不要把 Key 寫死在前端。</p>
   </div>
 
   <div class="card">
