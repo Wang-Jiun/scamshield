@@ -981,7 +981,7 @@ async def stats_ui(req: Request):
 
 
 
-    # ✅ 不用 f-string，避免 JS template literal 的 ${...} 讓 Python 爆炸
+    
     return """
 <!doctype html>
 <html lang="zh-Hant">
@@ -1208,7 +1208,7 @@ async function reload(){
     last50 = data.last_50 || [];
     renderRows();
   }catch(e){
-    document.body.innerHTML = `<pre>Stats UI 出事了：${e}\n（你是不是 ADMIN_KEY 打錯了，或 /stats 掛了）</pre>`;
+    document.body.innerHTML = `<pre>Stats UI 出事了：${e}\n（你是不是 ADMIN_KEY 打錯了，或 /stats 出錯）</pre>`;
   }
 }
 
@@ -1264,7 +1264,7 @@ async def api_docs():
 <body>
 <div class="wrap">
   <h1>🛡️ ScamShield 外部 API 文件</h1>
-  <p>給外部系統串接用的防詐文字分析 API。<span class="muted">（不儲存原文，放心啦）</span></p>
+  <p>給外部系統串接用的防詐文字分析 API。<span class="muted">（不儲存原文）</span></p>
 
   <div class="row">
     <span class="pill">Base URL：<code id="base">-</code></span>
@@ -1365,7 +1365,7 @@ async def api_docs():
     </p>
   </div>
 
-  <p class="muted" style="margin-top:14px">© ScamShield — 別被詐騙搞到血壓上來，靠杯。</p>
+  <p class="muted" style="margin-top:14px">© ScamShield — 別被詐騙了。</p>
 </div>
 
 <script>
